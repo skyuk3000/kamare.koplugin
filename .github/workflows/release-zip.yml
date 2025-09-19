@@ -1,0 +1,61 @@
+# Workflow: package src into kamare.koplugin.zip and upload to the GitHub Release
+# Trigger: when a release is published
+# Result: release will have an asset named kamare.koplugin.zip containing a top-level folder `kamare.koplugin` with the contents of `src/`
+
+name: "Release ZIP: package src"
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    name: Create ZIP and upload to release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure zip is available
+        run: |
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y zip
+          fi
+
+      - name: Prepare package directory
+        run: |
+          set -e
+          rm -rf package kamare.koplugin-${{ replace(github.event.release.tag_name, '/', '-') }}.zip package
+          mkdir -p package/kamare.koplugin
+          # Copy all files (including dotfiles) from src into the kamare.koplugin directory
+          if [ -d src ]; then
+            cp -a src/. package/kamare.koplugin/
+          else
+            echo "Warning: src directory not found; creating empty kamare.koplugin directory"
+          fi
+
+      - name: Create ZIP archive
+        run: |
+          set -e
+          cd package
+          zip -r ../kamare.koplugin-${{ replace(github.event.release.tag_name, '/', '-') }}.zip kamare.koplugin
+          cd -
+          echo "Created archive: $(du -h kamare.koplugin-${{ replace(github.event.release.tag_name, '/', '-') }}.zip | awk '{print $1}')"
+
+      - name: Show archive contents (for debug)
+        run: |
+          unzip -l kamare.koplugin-${{ replace(github.event.release.tag_name, '/', '-') }}.zip || true
+
+      - name: Upload release asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./kamare.koplugin-${{ replace(github.event.release.tag_name, '/', '-') }}.zip
+          asset_name: kamare.koplugin-${{ replace(github.event.release.tag_name, '/', '-') }}.zip
+          asset_content_type: application/zip
