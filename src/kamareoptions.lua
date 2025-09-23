@@ -3,6 +3,22 @@ local _ = require("gettext")
 local KamareOptions = {
     prefix = "kamare",
     {
+        icon = "appbar.pagefit",
+        options = {
+            {
+                name = "zoom_mode_type",
+                name_text = _("Fit"),
+                toggle = {_("full"), _("width"), _("height")},
+                alternate = false,
+                values = {2, 1, 0},
+                default_value = 2,
+                event = "DefineZoom",
+                args = {"full", "width", "height"},
+                help_text = _([[Set how the page should be resized to fit the screen.]]),
+            }
+        }
+    },
+    {
         icon = "appbar.settings",
         options = {
             {

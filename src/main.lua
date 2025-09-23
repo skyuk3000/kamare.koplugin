@@ -1,6 +1,6 @@
 local DataStorage = require("datastorage")
 local Dispatcher = require("dispatcher")
-local OPDSBrowser = require("opdsbrowser")
+local KavitaBrowser = require("kavitabrowser")
 local LuaSettings = require("luasettings")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
@@ -19,7 +19,6 @@ function Kamare:init()
         self.updated = true -- first run, force flush
     end
     self.servers = self.kamare_settings:readSetting("servers", {})
-    self.settings = self.kamare_settings:readSetting("settings", {})
     -- Footer mode will be loaded by KamareImageViewer instances as needed
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
@@ -42,20 +41,8 @@ function Kamare:addToMainMenu(menu_items)
 end
 
 function Kamare:onShowOPDSCatalog()
-    local server_config = nil
-    if self.servers and #self.servers > 0 then
-        -- Use the first configured server
-        local server = self.servers[1]
-        server_config = {
-            url = server.url,
-            username = server.username,
-            password = server.password,
-        }
-    end
-
-    self.opds_browser = OPDSBrowser:new{
+    self.opds_browser = KavitaBrowser:new{
         servers = self.servers,
-        settings = self.settings,
         title = _("Kavita Manga Reader"),
         is_popout = false,
         is_borderless = true,
