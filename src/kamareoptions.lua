@@ -13,7 +13,7 @@ local KamareOptions = {
                 values = {2, 1, 0},
                 default_value = 2,
                 event = "DefineZoom",
-                args = {"full", "width", "height"},
+                args = {2, 1, 0},
                 help_text = _([[Set how the page should be resized to fit the screen.]]),
             }
         }
@@ -35,10 +35,11 @@ local KamareOptions = {
                 name = "footer_mode",
                 name_text = _("Footer Display"),
                 toggle = {_("Off"), _("Progress"), _("Pages left"), _("Time")},
-                values = {0, 1, 2, 3},
-                args = {0, 1, 2, 3},
+                values = {7, 1, 2, 3},
+                args = {7, 1, 2, 3},
+                default_value = 1,
                 event = "SetFooterMode",
-                help_text = _("[[Choose what information to display in the footer.]]"),
+                help_text = _([[Choose what information to display in the footer.]]),
             }
         }
     }

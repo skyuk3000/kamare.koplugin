@@ -418,7 +418,7 @@ function KamareImageViewer:loadSettings()
         self.configurable:loadSettings(kamare_settings, self.options.prefix.."_")
 
         if self.configurable.footer_mode then
-            self.footer_settings.mode = self.configurable.footer_mode
+            self.footer_settings.mode = tonumber(self.configurable.footer_mode) or self.footer_settings.mode
         end
         -- Prefetch pages count
         if self.configurable.prefetch_pages ~= nil then
@@ -461,6 +461,11 @@ function KamareImageViewer:getCurrentFooterMode()
 end
 
 function KamareImageViewer:isValidMode(mode)
+    mode = tonumber(mode)
+    if not mode then
+        logger.dbg("Invalid mode (not a number):", tostring(mode))
+        return false
+    end
     if mode == self.MODE.off then
         return true
     end
@@ -522,7 +527,7 @@ function KamareImageViewer:setFooterMode(new_mode)
         return false
     end
 
-    self.footer_settings.mode = new_mode
+    self.footer_settings.mode = tonumber(new_mode) or self.footer_settings.mode
 
     local mode_name = self.mode_index[new_mode] or "off"
     logger.dbg("Set footer mode to:", new_mode, "name:", mode_name)
@@ -672,7 +677,7 @@ function KamareImageViewer:onSetFooterMode(...)
         logger.dbg("  arg[" .. i .. "] =", arg, "(" .. type(arg) .. ")")
     end
 
-    local mode = args[1]
+    local mode = tonumber(args[1])
     logger.dbg("onSetFooterMode called with mode:", mode)
 
     if self:setFooterMode(mode) then
@@ -709,6 +714,18 @@ function KamareImageViewer:onSetPrefetchPages(...)
         self:prefetchUpcomingTiles()
     end)
     return true
+end
+
+function KamareImageViewer:onDefineZoom(...)
+    local args = {...}
+    local v = tonumber(args[1])
+    logger.dbg("onDefineZoom called with value:", v)
+    if v ~= nil then
+        self.configurable.zoom_mode_type = v
+        self:saveSettings()
+        return true
+    end
+    return false
 end
 
 function KamareImageViewer:onTapMenu()

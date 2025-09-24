@@ -25,8 +25,8 @@ function Kamare:init()
 end
 
 function Kamare:onDispatcherRegisterActions()
-    Dispatcher:registerAction("kamare_show_catalog",
-        {category="none", event="ShowOPDSCatalog", title=_("Kavita Manga Reader"), filemanager=true,}
+    Dispatcher:registerAction("kamare_show_browser",
+        {category="none", event="ShowKavitaBrowser", title=_("Kavita Manga Reader"), filemanager=true,}
     )
 end
 
@@ -35,13 +35,13 @@ function Kamare:addToMainMenu(menu_items)
         text = _("Kavita Manga Reader"),
         sorting_hint = "search",
         callback = function()
-            self:onShowOPDSCatalog()
+            self:onShowKavitaBrowser()
         end,
     }
 end
 
-function Kamare:onShowOPDSCatalog()
-    self.opds_browser = KavitaBrowser:new{
+function Kamare:onShowKavitaBrowser()
+    self.kavita_browser = KavitaBrowser:new{
         servers = self.servers,
         title = _("Kavita Manga Reader"),
         is_popout = false,
@@ -49,11 +49,11 @@ function Kamare:onShowOPDSCatalog()
         title_bar_fm_style = true,
         _manager = self,
         close_callback = function()
-            UIManager:close(self.opds_browser)
+            UIManager:close(self.kavita_browser)
         end,
     }
 
-    UIManager:show(self.opds_browser)
+    UIManager:show(self.kavita_browser)
 end
 
 function Kamare:onFlushSettings()
