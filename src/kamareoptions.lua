@@ -22,13 +22,23 @@ local KamareOptions = {
         icon = "appbar.settings",
         options = {
             {
+                name = "prefetch_pages",
+                name_text = _("Prefetch Pages"),
+                toggle = {_("Off"), _("1"), _("2"), _("3")},
+                values = {0, 1, 2, 3},
+                default_value = 1,
+                event = "SetPrefetchPages",
+                args = {0, 1, 2, 3},
+                help_text = _([[Set how many pages to prefetch when reading.]]),
+            },
+            {
                 name = "footer_mode",
                 name_text = _("Footer Display"),
                 toggle = {_("Off"), _("Progress"), _("Pages left"), _("Time")},
                 values = {0, 1, 2, 3},
                 args = {0, 1, 2, 3},
                 event = "SetFooterMode",
-                help_text = _("Choose what information to display in the footer."),
+                help_text = _("[[Choose what information to display in the footer.]]"),
             }
         }
     }

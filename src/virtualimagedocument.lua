@@ -18,6 +18,8 @@ local VirtualImageDocument = Document:extend{
     images_list = nil,
     pages_override = nil,  -- For lazy tables with known length
 
+    cache_id = nil,        -- Stable ID for caching (e.g., session ID)
+
     sw_dithering = false,
 
     -- Number of images/pages
@@ -249,6 +251,22 @@ function VirtualImageDocument:getNativePageDimensions(pageno)
 
     -- No fetching here: return a sane fallback until renderPage computes real dims.
     return Geom:new{ w = 800, h = 1200 }
+end
+
+-- Preload per-page native dimensions from a list of FileDimensionDto.
+function VirtualImageDocument:preloadDimensions(list)
+    if type(list) ~= "table" then return end
+    self._dims_cache = self._dims_cache or {}
+    local count = 0
+    for _, d in ipairs(list) do
+        local pn = d.pageNumber or d.page or d.page_num
+        local w, h = d.width, d.height
+        if type(pn) == "number" and w and h and w > 0 and h > 0 then
+            self._dims_cache[pn] = Geom:new{ w = w, h = h }
+            count = count + 1
+        end
+    end
+    logger.dbg("VirtualImageDocument: preloaded dims for", count, "pages")
 end
 
 function VirtualImageDocument:getUsedBBox(pageno)
@@ -549,6 +567,11 @@ end
 function VirtualImageDocument:register(registry)
     -- Virtual docs aren't file-based; no extension/mimetype
     -- Call manually in viewer: VirtualImageDocument:new{ images_list = ... }
+end
+
+function VirtualImageDocument:prefetchPage(pageno, zoom, rotation, gamma)
+    -- Full-page render; persistent flag is set by renderPage when rect == nil.
+    return self:renderPage(pageno, nil, zoom, rotation, gamma)
 end
 
 return VirtualImageDocument

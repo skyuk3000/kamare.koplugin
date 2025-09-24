@@ -2,7 +2,7 @@ local BD = require("ui/bidi")
 local Device = require("device")
 local Font = require("ui/font")
 local TextWidget = require("ui/widget/textwidget")
-local ImageWidget = require("ui/widget/imagewidget") -- Still needed for ImageWidget:extend
+local ImageWidget = require("ui/widget/imagewidget")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local FrameContainer = require("ui/widget/container/framecontainer")
@@ -27,7 +27,8 @@ local TitleBar = require("ui/widget/titlebar")
 local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local Size = require("ui/size")
-local VirtualImageDocument = require("virtualimagedocument") -- New dependency
+local VirtualImageDocument = require("virtualimagedocument")
+local KavitaClient = require("kavitaclient")
 local _ = require("gettext")
 local T = require("ffi/util").template
 
@@ -100,13 +101,13 @@ local KamareImageViewer = InputContainer:extend{
     _center_y_ratio = 0.5,
     _image_wg = nil, -- Now a BlitBufferWidget
     _images_list_cur = 1,
-    _images_orig_scale_factor = 1.0,
 
     on_close_callback = nil,
     start_page = 1,
 
     configurable = Configurable:new(),
     options = KamareOptions,
+    prefetch_pages = 1,
 
     image_padding = Size.margin.small,
 
@@ -204,10 +205,9 @@ function KamareImageViewer:init()
     end
 
     -- Build a stable cache identity for this virtual document
-    local cache_id =
-        (self.metadata and (self.metadata.id or self.metadata.href or self.metadata.url))
-        or self.title
-        or "session"
+    local cache_id = (self.metadata and (self.title .. '/' .. self.metadata.seriesId .. '/' .. self.metadata.chapterId)) or self.title or "session"
+
+    logger.dbg("KamareImageViewer: Initializing VirtualImageDocument with cache_id =", cache_id)
 
     self.virtual_document = VirtualImageDocument:new{
         images_list = self.images_list_data,
@@ -217,6 +217,10 @@ function KamareImageViewer:init()
         cache_mod_time = 0, -- keep stable across sessions
     }
 
+    if self.preloaded_dimensions then
+        self.virtual_document:preloadDimensions(self.preloaded_dimensions)
+    end
+
     if not self.virtual_document.is_open then
         logger.err("KamareImageViewer: Failed to initialize VirtualImageDocument. Displaying empty screen.")
         -- Even if VirtualImageDocument fails, we want to keep the viewer open to show something.
@@ -225,7 +229,7 @@ function KamareImageViewer:init()
     end
 
     self._images_list_nb = self.virtual_document:getPageCount()
-    self._images_list_cur = self.start_page or 1
+    self._images_list_cur = (self.metadata and self.metadata.startPage) or 1
     if self._images_list_cur < 1 then
         self._images_list_cur = 1
     end
@@ -368,6 +372,10 @@ function KamareImageViewer:init()
     end
 
     self:update()
+    UIManager:nextTick(function()
+        self:prefetchUpcomingTiles()
+        self:_postViewProgress()
+    end)
 end
 
 function KamareImageViewer:registerKeyEvents()
@@ -412,19 +420,30 @@ function KamareImageViewer:loadSettings()
         if self.configurable.footer_mode then
             self.footer_settings.mode = self.configurable.footer_mode
         end
+        -- Prefetch pages count
+        if self.configurable.prefetch_pages ~= nil then
+            self.prefetch_pages = tonumber(self.configurable.prefetch_pages) or 1
+        else
+            self.prefetch_pages = 1
+        end
 
         logger.dbg("Loaded Kamare settings from file")
     else
         logger.dbg("No Kamare settings available - using defaults")
+        self.prefetch_pages = 1
     end
 
+    -- Keep config fields in sync so ConfigDialog reflects current state
     self.configurable.footer_mode = self.footer_settings.mode
+    self.configurable.prefetch_pages = self.prefetch_pages
     logger.dbg("Final configurable.footer_mode:", self.configurable.footer_mode)
     logger.dbg("Final footer_settings.mode:", self.footer_settings.mode)
+    logger.dbg("Final prefetch_pages:", self.prefetch_pages)
 end
 
 function KamareImageViewer:syncAndSaveSettings()
     self.configurable.footer_mode = self.footer_settings.mode
+    self.configurable.prefetch_pages = self.prefetch_pages
     self:saveSettings()
 end
 
@@ -601,6 +620,7 @@ function KamareImageViewer:onShowConfigMenu()
     logger.dbg("Showing Kamare config menu")
 
     self.configurable.footer_mode = self.footer_settings.mode
+    self.configurable.prefetch_pages = self.prefetch_pages
     logger.dbg("Before showing config dialog - configurable.footer_mode:", self.configurable.footer_mode)
     logger.dbg("Before showing config dialog - footer_settings.mode:", self.footer_settings.mode)
 
@@ -663,6 +683,34 @@ function KamareImageViewer:onSetFooterMode(...)
     return false
 end
 
+function KamareImageViewer:onSetPrefetchPages(...)
+    local args = {...}
+    local value = args[1]
+    logger.dbg("onSetPrefetchPages called with value:", value)
+    local n = tonumber(value)
+    if not n then
+        logger.warn("onSetPrefetchPages: invalid value:", value)
+        return false
+    end
+    if n < 0 then n = 0 end
+    if n > 10 then n = 10 end -- safety clamp
+
+    if n == self.prefetch_pages then
+        return true
+    end
+
+    self.prefetch_pages = n
+    self.configurable.prefetch_pages = n
+    logger.dbg("Prefetch pages set to:", n)
+
+    self:syncAndSaveSettings()
+
+    UIManager:nextTick(function()
+        self:prefetchUpcomingTiles()
+    end)
+    return true
+end
+
 function KamareImageViewer:onTapMenu()
     logger.dbg("Menu zone tap - toggling title bar")
     self:toggleTitleBar()
@@ -721,7 +769,7 @@ function KamareImageViewer:setupTitleBar()
     local subtitle
 
     if self.metadata then
-        title = self.metadata.text or title
+        title = self.metadata.seriesName or self.metadata.localizedName or self.metadata.originalName or title
         if self.metadata.author then
             subtitle = T(_("by %1"), self.metadata.author)
         end
@@ -959,6 +1007,10 @@ function KamareImageViewer:switchToImageNum(image_num)
     self.current_image_start_time = os.time()
 
     self:update()
+    self:_postViewProgress()
+    UIManager:nextTick(function()
+        self:prefetchUpcomingTiles()
+    end)
 end
 
 function KamareImageViewer:onShowNextImage()
@@ -1032,6 +1084,62 @@ function KamareImageViewer:update()
         local update_region = self.main_frame.dimen:combine(orig_dimen)
         return "partial", update_region
     end)
+end
+
+-- Prefetch the next N pages' full tiles (fit-to-screen) into DocCache.
+function KamareImageViewer:prefetchUpcomingTiles()
+    if not self.virtual_document then return end
+    local count = tonumber(self.prefetch_pages) or 0
+    if count <= 0 then return end
+
+    local max_w = self.width
+    local max_h = self.img_container_h
+    if self.footer_visible or self.title_bar_visible then
+        max_w = max_w - self.image_padding*2
+        max_h = max_h - self.image_padding*2
+    end
+
+    local rotation_angle = self:_getRotationAngle()
+    local gamma = 1.0
+
+    for i = 1, count do
+        local page = (self._images_list_cur or 0) + i
+        if page > (self._images_list_nb or 0) then break end
+
+        UIManager:nextTick(function()
+            pcall(function()
+                local dims = self.virtual_document:getNativePageDimensions(page)
+                if not dims or dims.w <= 0 or dims.h <= 0 then return end
+
+                local w0, h0 = dims.w, dims.h
+                if rotation_angle == 90 or rotation_angle == 270 then
+                    w0, h0 = h0, w0
+                end
+                if w0 <= 0 or h0 <= 0 then return end
+
+                local zoom = math.min(max_w / w0, max_h / h0)
+                if not (zoom and zoom > 0) then
+                    zoom = self._scale_factor_0 or 1.0
+                end
+
+                -- Full-page prefetch (persistent tile)
+                self.virtual_document:prefetchPage(page, zoom, rotation_angle, gamma)
+            end)
+        end)
+    end
+end
+
+-- Post reading progress for the currently viewed page (if configured).
+function KamareImageViewer:_postViewProgress()
+    if not (self.metadata and KavitaClient and KavitaClient.bearer) then return end
+    if self.last_posted_page == self._images_list_cur then return end
+    local page = self._images_list_cur
+    UIManager:nextTick(function()
+        pcall(function()
+            KavitaClient:postReaderProgressForPage(self.metadata, page)
+        end)
+    end)
+    self.last_posted_page = page
 end
 
 

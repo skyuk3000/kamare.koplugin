@@ -89,7 +89,7 @@ function KavitaBrowser:showTitleMenu()
         text = _("Add Kavita server"),
         callback = function()
             UIManager:close(dialog)
-            self:addEditServer()
+            self:addEditServer(nil, false)
         end,
         align = "left",
     }})
@@ -353,7 +353,7 @@ local function buildKavitaChapterItems(chapters, kind)
 end
 
 -- Fetch SeriesDetail and display Volumes, then Chapters, then Specials
-function KavitaBrowser:showSeriesDetail(series_name, series_id, library_id)
+function KavitaBrowser:showSeriesDetail(series_name, series_id, library_id, opts)
     local loading = InfoMessage:new{ text = _("Loading..."), timeout = 0 }
     UIManager:show(loading)
     UIManager:forceRePaint()
@@ -430,9 +430,12 @@ function KavitaBrowser:showSeriesDetail(series_name, series_id, library_id)
         if nm and not self.current_series_names.name then self.current_series_names.name = nm end
     end
 
-    -- Push a sentinel so back returns to the stream list
-    self.paths = self.paths or {}
-    table.insert(self.paths, { kavita_stream_root = self.current_stream_name, title = self.catalog_title })
+    local refresh_only = opts and opts.refresh_only
+    -- Push a sentinel so back returns to the stream list (skip when refreshing)
+    if not refresh_only then
+        self.paths = self.paths or {}
+        table.insert(self.paths, { kavita_stream_root = self.current_stream_name, title = self.catalog_title })
+    end
 
     self:switchItemTable(self.catalog_title, items, nil, nil, self.catalog_author)
     self:setTitleBarLeftIcon("appbar.menu")
@@ -653,17 +656,10 @@ end
 
 
 local function buildRootEntry(server)
-    local icons = ""
-    if server.username then
-        icons = "\u{f2c0}"
-    end
     return {
         text       = server.name,
-        mandatory  = icons,
-        url        = server.url,
-        username   = server.username,
-        password   = server.password,
-        searchable = server.url and server.url:match("%%s") and true or false,
+        url        = server.kavita_url,
+        searchable = server.kavita_url and server.kavita_url:match("%%s") and true or false,
     }
 end
 
@@ -679,7 +675,8 @@ function KavitaBrowser:genItemTableFromRoot()
 end
 
 -- Shows dialog to edit properties of the new/existing catalog
-function KavitaBrowser:addEditServer(item)
+function KavitaBrowser:addEditServer(item, is_edit)
+    if is_edit == nil then is_edit = item ~= nil end
     local fields = {
         {
             hint = _("Server name"),
@@ -688,24 +685,20 @@ function KavitaBrowser:addEditServer(item)
             hint = _("Server URL"),
         },
         {
-            hint = _("Username (optional)"),
-        },
-        {
-            hint = _("Password (optional)"),
-            text_type = "password",
+            hint = _("API key"),
         },
     }
     local title
-    if item then
+    if is_edit then
         title = _("Edit Kavita server")
         fields[1].text = item.text
         fields[2].text = item.url
-        fields[3].text = item.username
-        fields[4].text = item.password
+        fields[3].text = (self.servers and self.servers[item.idx] and self.servers[item.idx].api_key) or nil
     else
         title = _("Add Kavita server")
     end
 
+    local button_text = is_edit and _("Save") or _("Add")
     local dialog
     dialog = MultiInputDialog:new{
         title = title,
@@ -720,7 +713,7 @@ function KavitaBrowser:addEditServer(item)
                     end,
                 },
                 {
-                    text = _("Save"),
+                    text = button_text,
                     callback = function()
                         local new_fields = dialog:getFields()
                         self:editServerFromInput(new_fields, item)
@@ -738,10 +731,9 @@ end
 -- Saves catalog properties from input dialog
 function KavitaBrowser:editServerFromInput(fields, item)
     local new_server = {
-        name      = fields[1],
-        url       = fields[2]:match("^%a+://") and fields[2] or "http://" .. fields[2],
-        username  = fields[3] ~= "" and fields[3] or nil,
-        password  = fields[4] ~= "" and fields[4] or nil,
+        name        = fields[1],
+        kavita_url  = fields[2]:match("^%a+://") and fields[2] or "http://" .. fields[2],
+        api_key     = fields[3] ~= "" and fields[3] or nil,
     }
     local new_item = buildRootEntry(new_server)
     local new_idx, itemnumber
@@ -796,11 +788,11 @@ function KavitaBrowser:launchKavitaChapterViewer(chapter, series_name)
         library_id = self.current_series_library_id,
         volume_id  = chapter.volumeId,
     }
-    local page_table = KavitaClient:streamChapter(chapter.id, ctx)
+    local page_table = KavitaClient:streamChapter(chapter.id)
 
     local start_page = 1
     if type(chapter.pagesRead) == "number" and chapter.pagesRead > 0 and chapter.pagesRead < pages then
-        start_page = chapter.pagesRead + 1
+        start_page = chapter.pagesRead
     end
 
     local function normalize_authors(a)
@@ -835,12 +827,27 @@ function KavitaBrowser:launchKavitaChapterViewer(chapter, series_name)
 
         -- IDs for progress/integration
         seriesId      = self.current_series_id,
+        libraryId     = self.current_series_library_id,
         volumeId      = chapter.volumeId,
         chapterId     = chapter.id,
 
         -- Keep raw chapter for any further needs
         chapter       = chapter,
+
+        -- Reader state
+        startPage     = start_page,
     }
+
+
+    local preloaded_dimensions
+    do
+        local dims, code = KavitaClient:getFileDimensions(chapter.id)
+        if type(code) == "number" and code >= 200 and code < 300 and type(dims) == "table" then
+            preloaded_dimensions = dims
+        else
+            logger.warn("KavitaBrowser: getFileDimensions failed:", code)
+        end
+    end
 
     local KamareImageViewer = require("kamareimageviewer")
     local viewer = KamareImageViewer:new{
@@ -848,12 +855,20 @@ function KavitaBrowser:launchKavitaChapterViewer(chapter, series_name)
         title = metadata.seriesName or _("Manga"),
         fullscreen = true,
         with_title_bar = false,
-        image_disposable = false, -- page_table has image_disposable = true
         images_list_nb = pages,
+        preloaded_dimensions = preloaded_dimensions,
         metadata = metadata,
-        start_page = start_page,
         on_close_callback = function(current_page, total_pages)
             logger.dbg("Reader closed - ended at page", current_page, "of", total_pages)
+            local sid = self.current_series_id
+            if not sid then return end
+            local lid = self.current_series_library_id
+            local sname = self.catalog_title
+                or (self.current_series_names and (self.current_series_names.localizedName or self.current_series_names.name))
+                or _("Series")
+            UIManager:nextTick(function()
+                self:showSeriesDetail(sname, sid, lid, { refresh_only = true })
+            end)
         end,
     }
     UIManager:show(viewer)
@@ -933,7 +948,7 @@ function KavitaBrowser:onMenuHold(item)
                     text = _("Edit"),
                     callback = function()
                         UIManager:close(dialog)
-                        self:addEditServer(item)
+                        self:addEditServer(item, true)
                     end,
                 },
             },

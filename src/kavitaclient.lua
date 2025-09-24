@@ -331,17 +331,38 @@ function KavitaClient:getSeriesDetail(seriesId)
     end
     local path = "/api/Series/series-detail"
     logger.dbg("KavitaClient:getSeriesDetail:", path, "seriesId=", seriesId)
-    local data, code, headers, status, body = self:apiJSONCached(path, {
+    local data, code, headers, status, body = self:apiJSON(path, {
         method = "GET",
         query  = { seriesId = seriesId },
-    }, 300, "kavita|series_detail")
+    })
+    return data, code, headers, status, body
+end
+
+-- Returns the file dimensions for all pages in a chapter.
+-- GET /api/Reader/file-dimensions?chapterId={id}&extractPdf=false[&apiKey=...]
+function KavitaClient:getFileDimensions(chapter_id)
+    if not chapter_id then
+        logger.warn("KavitaClient:getFileDimensions: chapter_id is required")
+        return nil, -1, nil, "chapterId required", nil
+    end
+    local query = {
+        chapterId  = chapter_id,
+        extractPdf = false,
+    }
+    if self.api_key and self.api_key ~= "" then
+        query.apiKey = self.api_key
+    end
+    local data, code, headers, status, body = self:apiJSONCached("/api/Reader/file-dimensions", {
+        method          = "GET",
+        query           = query,
+        timeout_profile = "file",
+    }, 600, "kavita|filedims")
     return data, code, headers, status, body
 end
 
 -- Creates a page table for Kavita Reader images
 function KavitaClient:createReaderPageTable(chapter_id, ctx)
     local page_table = { image_disposable = true }
-    local extractPdf = false
 
     setmetatable(page_table, { __index = function(_, key)
         if type(key) ~= "number" then
@@ -354,7 +375,7 @@ function KavitaClient:createReaderPageTable(chapter_id, ctx)
         local query = {
             chapterId  = chapter_id,
             page       = page,
-            extractPdf = extractPdf and "true" or "false",
+            extractPdf = "false",
         }
         -- Some deployments require apiKey as query param in addition to Bearer
         if self.api_key and self.api_key ~= "" then
@@ -374,24 +395,7 @@ function KavitaClient:createReaderPageTable(chapter_id, ctx)
         end
 
         if code == 200 then
-            -- Post reading progress (fire-and-forget) if context is provided
-            if ctx and ctx.series_id and ctx.library_id and ctx.volume_id then
-                local progress = {
-                    volumeId  = ctx.volume_id,
-                    chapterId = chapter_id,
-                    pageNum   = page,
-                    seriesId  = ctx.series_id,
-                    libraryId = ctx.library_id,
-                }
-                local okp, pcode, _, pstatus = pcall(function()
-                    return self:postReaderProgress(progress)
-                end)
-                if not okp then
-                    logger.warn("KavitaClient:postReaderProgress pcall failed")
-                elseif type(pcode) == "number" and (pcode < 200 or pcode >= 300) then
-                    logger.warn("KavitaClient:postReaderProgress non-OK:", pcode, pstatus)
-                end
-            end
+            -- No reading progress side-effects here; handled by viewer when page is shown
             return body_str
         else
             logger.dbg("KavitaClient: Reader image request failed:", status or code)
@@ -403,8 +407,8 @@ function KavitaClient:createReaderPageTable(chapter_id, ctx)
 end
 
 -- Convenience wrapper to return page table
-function KavitaClient:streamChapter(chapter_id, ctx)
-    local page_table = self:createReaderPageTable(chapter_id, ctx)
+function KavitaClient:streamChapter(chapter_id)
+    local page_table = self:createReaderPageTable(chapter_id)
     return page_table
 end
 
@@ -423,6 +427,23 @@ function KavitaClient:postReaderProgress(progress)
         method = "POST",
         body = progress,
     })
+end
+
+-- Convenience wrapper to post progress for a specific page number given a context table.
+-- ctx may use snake_case or camelCase keys.
+function KavitaClient:postReaderProgressForPage(ctx, pageNum)
+    if type(ctx) ~= "table" or type(pageNum) ~= "number" then
+        logger.warn("KavitaClient:postReaderProgressForPage: invalid ctx or pageNum")
+        return -1, nil, "invalid progress ctx", nil
+    end
+    local payload = {
+        volumeId  = ctx.volume_id or ctx.volumeId,
+        chapterId = ctx.chapter_id or ctx.chapterId,
+        pageNum   = pageNum,
+        seriesId  = ctx.series_id or ctx.seriesId,
+        libraryId = ctx.library_id or ctx.libraryId,
+    }
+    return self:postReaderProgress(payload)
 end
 
 -- Search: GET /api/Search/search
