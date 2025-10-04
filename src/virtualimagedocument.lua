@@ -731,29 +731,6 @@ function VirtualImageDocument:renderPage(pageno, rect, zoom, rotation)
     return self:_scaleToZoom(tile, zoom, rotation)
 end
 
-function VirtualImageDocument:_getScaledTileHash(pageno, zoom, rotation, gamma, rect)
-    -- Hash for scaled tiles - includes zoom
-    local qg = math.floor((gamma or 1) * 1000 + 0.5)
-    local qz = math.floor((zoom or 1) * 1000 + 0.5)
-    local x = math.floor((rect.x or 0) + 0.5)
-    local y = math.floor((rect.y or 0) + 0.5)
-    local w = math.floor((rect.w or 0) + 0.5)
-    local h = math.floor((rect.h or 0) + 0.5)
-    local color = self.render_color and "color" or "bw"
-    return table.concat({
-        "scaledtile",  -- Different prefix for scaled tiles
-        self.file or "",
-        tostring(self.mod_time or 0),
-        tostring(pageno or 0),
-        tostring(x), tostring(y), tostring(w), tostring(h),
-        tostring(rotation or 0),
-        tostring(qg),
-        tostring(qz),  -- Include zoom in hash
-        tostring(self.render_mode or 0),
-        color,
-    }, "|")
-end
-
 function VirtualImageDocument:_scaleToZoom(native_tile, zoom, rotation)
     if not (native_tile and native_tile.bb) then
         return native_tile
@@ -774,35 +751,21 @@ function VirtualImageDocument:_scaleToZoom(native_tile, zoom, rotation)
         return native_tile
     end
 
-    -- Check if scaled version is already cached
-    local scaled_rect = Geom:new{
-        x = native_tile.excerpt and native_tile.excerpt.x or 0,
-        y = native_tile.excerpt and native_tile.excerpt.y or 0,
-        w = native_w,
-        h = native_h
-    }
-    local scaled_hash = self:_getScaledTileHash(native_tile.pageno, zoom, rotation, self.gamma, scaled_rect)
-    local cached_scaled = DocCache:check(scaled_hash, TileCacheItem)
-    if cached_scaled and cached_scaled.bb then
-        return cached_scaled
-    end
-
-    -- Scale using MuPDF's high-quality scaler
+    -- Scale using MuPDF's high-quality scaler (on-demand, no caching)
     local scaled_bb = mupdf.scaleBlitBuffer(native_tile.bb, target_w, target_h)
 
-    -- Create a new tile with the scaled blitbuffer
+    -- Create a new tile with the scaled blitbuffer (transient, not cached)
     local scaled_tile = TileCacheItem:new{
-        persistent = false,  -- Allow cache eviction for scaled versions
+        persistent = false,
         doc_path = native_tile.doc_path,
         created_ts = native_tile.created_ts,
-        excerpt = Geom:new{x = scaled_rect.x, y = scaled_rect.y, w = native_w, h = native_h},  -- Keep excerpt in native coords
+        excerpt = Geom:new{x = native_tile.excerpt and native_tile.excerpt.x or 0,
+                          y = native_tile.excerpt and native_tile.excerpt.y or 0,
+                          w = native_w, h = native_h},
         pageno = native_tile.pageno,
         bb = scaled_bb,
     }
     scaled_tile.size = tonumber(scaled_bb.stride) * scaled_bb.h + 512
-
-    -- Cache the scaled version
-    DocCache:insert(scaled_hash, scaled_tile)
 
     return scaled_tile
 end
