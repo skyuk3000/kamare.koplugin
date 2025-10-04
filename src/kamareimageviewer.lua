@@ -6,7 +6,6 @@ local CenterContainer = require("ui/widget/container/centercontainer")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local Blitbuffer = require("ffi/blitbuffer")
-local datetime = require("datetime")
 local UIManager = require("ui/uimanager")
 local Screen = Device.screen
 local logger = require("logger")
@@ -25,45 +24,10 @@ local VirtualImageDocument = require("virtualimagedocument")
 local VirtualPageCanvas = require("virtualpagecanvas")
 local KavitaClient = require("kavitaclient")
 local Math = require("optmath")
-local GestureRange = require("ui/gesturerange")
 local _ = require("gettext")
 local T = require("ffi/util").template
 
 local KamareImageViewer = InputContainer:extend{
-    MODE = {
-        page_progress = 1,
-        pages_left_book = 2,
-        time = 3,
-        battery = 4,
-        percentage = 5,
-        book_time_to_read = 6,
-        off = 7,
-    },
-
-    symbol_prefix = {
-        letters = {
-            time = nil,
-            pages_left_book = "->",
-            battery = "B:",
-            percentage = "R:",
-            book_time_to_read = "TB:",
-        },
-        icons = {
-            time = "⌚",
-            pages_left_book = "⇒",
-            battery = "",
-            percentage = "⤠",
-            book_time_to_read = "⏳",
-        },
-        compact_items = {
-            time = nil,
-            pages_left_book = "›",
-            battery = "",
-            percentage = nil,
-            book_time_to_read = nil,
-        }
-    },
-
     images_list_data = nil,
     images_list_nb = nil,
 
@@ -129,16 +93,6 @@ function KamareImageViewer:init()
         self.covers_fullscreen = true
     end
 
-    self.mode_index = {
-        [1] = "page_progress",
-        [2] = "pages_left_book",
-        [3] = "time",
-        [4] = "battery",
-        [5] = "percentage",
-        [6] = "book_time_to_read",
-        [7] = "off",
-    }
-
     self.image_viewing_times = {}
     self.current_image_start_time = os.time()
     self.title_bar_visible = false
@@ -178,8 +132,9 @@ function KamareImageViewer:init()
         self._pending_scroll_page = self._images_list_cur
     end
     if self.virtual_document and self._images_list_nb > 1 then
-        self.footer = KamareFooter:new{ owner = self }
-        self.footer_visible = (self.footer_settings.mode ~= self.MODE.off)
+        self.footer = KamareFooter:new{
+            settings = self.footer_settings,
+        }
     end
 
     self:update()
@@ -234,6 +189,13 @@ function KamareImageViewer:_initCanvas()
         background = Blitbuffer.COLOR_WHITE,
         scroll_mode = self.scroll_mode,
     }
+
+    self.canvas_container = CenterContainer:new{
+        dimen = Geom:new{ w = self.width, h = self.height },
+        self.canvas,
+    }
+
+    self.image_container = self.canvas_container
 end
 
 function KamareImageViewer:_updateDimensions()
@@ -347,7 +309,9 @@ function KamareImageViewer:setZoomMode(mode)
         end
 
         self:updateImageOnly()
-        self:refreshFooter()
+        if self.footer and self.footer:update(self:getFooterState()) then
+            UIManager:setDirty(self, "ui", self.footer:getWidget().dimen)
+        end
 
         UIManager:nextTick(function()
             self:prefetchUpcomingTiles()
@@ -401,23 +365,9 @@ function KamareImageViewer:setupTitleBar()
 end
 
 
-function KamareImageViewer:updateFooterTextGenerator()
-    if self.footer then self.footer:updateTextGenerator() end
-end
-
-
 ------------------------------------------------------------------------
 --  Footer & progress
 ------------------------------------------------------------------------
-
-
-function KamareImageViewer:refreshFooter()
-    if self.footer then self.footer:refresh() end
-end
-
-function KamareImageViewer:updateProgressBar()
-    if self.footer then self.footer:updateProgressBar() end
-end
 
 function KamareImageViewer:getTimeEstimate(remaining_images)
     if #self.image_viewing_times == 0 then return _("N/A") end
@@ -449,6 +399,34 @@ function KamareImageViewer:recordViewingTimeIfValid()
     end
 end
 
+function KamareImageViewer:getFooterState()
+    -- Calculate scroll progress if in scroll mode
+    local scroll_progress = 0
+    if self.scroll_mode and self.canvas and self.virtual_document then
+        local zoom = self:getCurrentZoom()
+        local total = self.virtual_document:getVirtualHeight(zoom, self:_getRotationAngle())
+        local viewport_h = select(2, self.canvas:getViewportSize())
+        if total > 0 then
+            local pos = (self.scroll_offset or 0) + viewport_h / 2
+            local Math = require("optmath")
+            scroll_progress = Math.clamp(pos / total, 0, 1)
+        end
+    end
+
+    -- Calculate time estimate
+    local remaining = self._images_list_nb - self._images_list_cur
+    local time_estimate = self:getTimeEstimate(remaining)
+
+    return {
+        current_page = self._images_list_cur,
+        total_pages = self._images_list_nb,
+        has_document = self.virtual_document ~= nil,
+        is_scroll_mode = self.scroll_mode or false,
+        scroll_progress = scroll_progress,
+        time_estimate = time_estimate,
+    }
+end
+
 ------------------------------------------------------------------------
 --  Mode toggles, footer controls
 ------------------------------------------------------------------------
@@ -464,7 +442,6 @@ end
 function KamareImageViewer:cycleToNextValidMode()
     if not self.footer then return self.footer_settings.mode end
     local mode = self.footer:cycleToNextValidMode()
-    self.footer_settings.mode = mode
     self:syncAndSaveSettings()
     self:applyFooterMode()
     return mode
@@ -472,8 +449,7 @@ end
 
 function KamareImageViewer:setFooterMode(mode)
     if not (self.footer and self.footer:isValidMode(mode)) then return false end
-    self.footer_settings.mode = tonumber(mode) or self.footer_settings.mode
-    self.footer:setMode(self.footer_settings.mode)
+    self.footer:setMode(mode)
     self:syncAndSaveSettings()
     self:applyFooterMode()
     return true
@@ -773,8 +749,9 @@ function KamareImageViewer:_scrollToPage(page)
     local offset = self.virtual_document:getScrollPositionForPage(page, zoom, self:_getRotationAngle())
     self:_setScrollOffset(offset, { silent = true })
     self:_updatePageFromScroll(true)
-    self:updateProgressBar()
-    self:refreshFooter()
+    if self.footer and self.footer:update(self:getFooterState()) then
+        UIManager:setDirty(self, "ui", self.footer:getWidget().dimen)
+    end
 end
 
 function KamareImageViewer:_updatePageFromScroll(silent)
@@ -785,44 +762,21 @@ function KamareImageViewer:_updatePageFromScroll(silent)
         if not silent then self:recordViewingTimeIfValid() end
         self._images_list_cur = new_page
         self.current_image_start_time = os.time()
-        self:updateFooterTextGenerator()
-        self:refreshFooter()
+        if self.footer and self.footer:update(self:getFooterState()) then
+            UIManager:setDirty(self, "ui", self.footer:getWidget().dimen)
+        end
         self:_postViewProgress()
         UIManager:nextTick(function() self:prefetchUpcomingTiles() end)
     elseif not silent then
-        self:refreshFooter()
+        if self.footer and self.footer:update(self:getFooterState()) then
+            UIManager:setDirty(self, "ui", self.footer:getWidget().dimen)
+        end
     end
 end
 
 ------------------------------------------------------------------------
 --  Canvas update & rendering
 ------------------------------------------------------------------------
-
-function KamareImageViewer:_ensureCanvas()
-    if not self.canvas then
-        self.canvas = VirtualPageCanvas:new{
-            document = self.virtual_document,
-            padding = self.image_padding,
-            background = Blitbuffer.COLOR_WHITE,
-        }
-    else
-        self.canvas:setDocument(self.virtual_document)
-        self.canvas:setPadding(self.image_padding)
-        self.canvas:setBackground(Blitbuffer.COLOR_WHITE)
-    end
-
-    if not self.canvas_container then
-        self.canvas_container = CenterContainer:new{
-            dimen = Geom:new{ w = self.width, h = self.img_container_h },
-            self.canvas,
-        }
-    else
-        self.canvas_container.dimen = Geom:new{ w = self.width, h = self.img_container_h }
-        self.canvas_container[1] = self.canvas
-    end
-
-    self.image_container = self.canvas_container
-end
 
 function KamareImageViewer:_updateCanvasState()
     if not (self.canvas and self.virtual_document) then return end
@@ -869,11 +823,15 @@ function KamareImageViewer:_updateCanvasState()
         self.scroll_offset = desired
         self.canvas:setScrollOffset(desired)
         self:_updatePageFromScroll(true)
-        self:updateProgressBar()
+        if self.footer and self.footer:update(self:getFooterState()) then
+            UIManager:setDirty(self, "ui", self.footer:getWidget().dimen)
+        end
     else
         self.scroll_offset = 0
         self.canvas:setCenter(0.5, 0.5)
-        self:updateProgressBar()
+        if self.footer and self.footer:update(self:getFooterState()) then
+            UIManager:setDirty(self, "ui", self.footer:getWidget().dimen)
+        end
     end
 end
 
@@ -888,13 +846,17 @@ function KamareImageViewer:update()
         table.insert(self.frame_elements, self.title_bar)
     end
     local image_idx = #self.frame_elements + 1
-    if self.footer and self.footer_visible then
-        self.footer:update()
+    if self.footer and self.footer:isVisible() then
+        self.footer:update(self:getFooterState())
         table.insert(self.frame_elements, self.footer:getWidget())
     end
     self.img_container_h = self.height - self.frame_elements:getSize().h
 
-    self:_ensureCanvas()
+    -- Update canvas container dimensions
+    if self.canvas_container then
+        self.canvas_container.dimen = Geom:new{ w = self.width, h = self.img_container_h }
+    end
+
     self:_updateCanvasState()
 
     if self.image_container then
@@ -995,7 +957,9 @@ function KamareImageViewer:switchToImageNum(page)
     end
 
     self:updateImageOnly()
-    self:refreshFooter()
+    if self.footer and self.footer:update(self:getFooterState()) then
+        UIManager:setDirty(self, "ui", self.footer:getWidget().dimen)
+    end
     self:_postViewProgress()
     UIManager:nextTick(function() self:prefetchUpcomingTiles() end)
 end
@@ -1112,8 +1076,6 @@ function KamareImageViewer:toggleTitleBar()
 end
 
 function KamareImageViewer:applyFooterMode()
-    self.footer_visible = (self.footer_settings.mode ~= self.MODE.off)
-    self:updateFooterTextGenerator()
     self:update()
 end
 

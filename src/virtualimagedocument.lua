@@ -133,8 +133,38 @@ function VirtualImageDocument:init()
     logger.info("VID:init complete", "pages", self._pages, "gap", self.page_gap_height, "cache_ts", self.tile_cache_validity_ts)
 end
 
+function VirtualImageDocument:clearCache()
+    -- Clear all cached tiles for this document from DocCache
+    if not self.file then return end
+
+    local doc_path = self.file
+    local keys_to_delete = {}
+
+    -- Collect all keys for this document
+    for key, item in DocCache.cache:pairs() do
+        if item and item.doc_path == doc_path then
+            table.insert(keys_to_delete, key)
+        end
+    end
+
+    -- Delete them
+    local count = #keys_to_delete
+    if count > 0 then
+        logger.info("VID:clearCache removing", count, "cached items for", doc_path)
+        for _, key in ipairs(keys_to_delete) do
+            DocCache.cache:delete(key)
+        end
+        -- Force garbage collection to free blitbuffers
+        collectgarbage()
+        collectgarbage()
+    end
+end
+
 function VirtualImageDocument:close()
     logger.info("VID:close")
+    -- Clear all cached tiles before closing
+    self:clearCache()
+
     self.is_open = false
     self._dims_cache = nil
     self._virtual_layout_cache = nil
@@ -630,7 +660,7 @@ function VirtualImageDocument:renderPage(pageno, rect, zoom, rotation)
     end
 
     -- Create tile at NATIVE resolution for caching
-    tile = TileCacheItem:new{
+    local tile = TileCacheItem:new{
         persistent = true,
         doc_path = self.file,
         created_ts = os.time(),
@@ -701,6 +731,29 @@ function VirtualImageDocument:renderPage(pageno, rect, zoom, rotation)
     return self:_scaleToZoom(tile, zoom, rotation)
 end
 
+function VirtualImageDocument:_getScaledTileHash(pageno, zoom, rotation, gamma, rect)
+    -- Hash for scaled tiles - includes zoom
+    local qg = math.floor((gamma or 1) * 1000 + 0.5)
+    local qz = math.floor((zoom or 1) * 1000 + 0.5)
+    local x = math.floor((rect.x or 0) + 0.5)
+    local y = math.floor((rect.y or 0) + 0.5)
+    local w = math.floor((rect.w or 0) + 0.5)
+    local h = math.floor((rect.h or 0) + 0.5)
+    local color = self.render_color and "color" or "bw"
+    return table.concat({
+        "scaledtile",  -- Different prefix for scaled tiles
+        self.file or "",
+        tostring(self.mod_time or 0),
+        tostring(pageno or 0),
+        tostring(x), tostring(y), tostring(w), tostring(h),
+        tostring(rotation or 0),
+        tostring(qg),
+        tostring(qz),  -- Include zoom in hash
+        tostring(self.render_mode or 0),
+        color,
+    }, "|")
+end
+
 function VirtualImageDocument:_scaleToZoom(native_tile, zoom, rotation)
     if not (native_tile and native_tile.bb) then
         return native_tile
@@ -721,19 +774,35 @@ function VirtualImageDocument:_scaleToZoom(native_tile, zoom, rotation)
         return native_tile
     end
 
+    -- Check if scaled version is already cached
+    local scaled_rect = Geom:new{
+        x = native_tile.excerpt and native_tile.excerpt.x or 0,
+        y = native_tile.excerpt and native_tile.excerpt.y or 0,
+        w = native_w,
+        h = native_h
+    }
+    local scaled_hash = self:_getScaledTileHash(native_tile.pageno, zoom, rotation, self.gamma, scaled_rect)
+    local cached_scaled = DocCache:check(scaled_hash, TileCacheItem)
+    if cached_scaled and cached_scaled.bb then
+        return cached_scaled
+    end
+
     -- Scale using MuPDF's high-quality scaler
     local scaled_bb = mupdf.scaleBlitBuffer(native_tile.bb, target_w, target_h)
 
     -- Create a new tile with the scaled blitbuffer
     local scaled_tile = TileCacheItem:new{
-        persistent = false,  -- Don't cache scaled versions
+        persistent = false,  -- Allow cache eviction for scaled versions
         doc_path = native_tile.doc_path,
         created_ts = native_tile.created_ts,
-        excerpt = Geom:new{w = target_w, h = target_h},
+        excerpt = Geom:new{x = scaled_rect.x, y = scaled_rect.y, w = native_w, h = native_h},  -- Keep excerpt in native coords
         pageno = native_tile.pageno,
         bb = scaled_bb,
     }
     scaled_tile.size = tonumber(scaled_bb.stride) * scaled_bb.h + 512
+
+    -- Cache the scaled version
+    DocCache:insert(scaled_hash, scaled_tile)
 
     return scaled_tile
 end
@@ -772,11 +841,16 @@ function VirtualImageDocument:_preSplitPageTiles(pageno, zoom, rotation, tile_px
     end
 
     local started = self:_beginTileBatch(pageno)
-    for _, t in ipairs(missing) do
-        self:renderPage(pageno, t, zoom, rotation)
-    end
+    local ok, err = pcall(function()
+        for _, t in ipairs(missing) do
+            self:renderPage(pageno, t, zoom, rotation)
+        end
+    end)
     if started then
         self:_endTileBatch()
+    end
+    if not ok then
+        logger.warn("VID:_preSplitPageTiles error during render", "page", pageno, "error", err)
     end
 end
 
@@ -829,28 +903,34 @@ function VirtualImageDocument:drawPageTiled(target, x, y, rect, pageno, zoom, ro
     local tiles = self:_computeTileRects(prefetch_rect, tp)
     if #tiles == 0 then return true end
 
-    for _, t in ipairs(tiles) do
-        -- Always render tiles in the expanded window to warm the cache
-        local ttile = self:renderPage(pageno, t, zoom, rotation)
+    local ok, err = pcall(function()
+        for _, t in ipairs(tiles) do
+            -- Always render tiles in the expanded window to warm the cache
+            local ttile = self:renderPage(pageno, t, zoom, rotation)
 
-        -- Only draw the visible overlap against the original (non-expanded) rect
-        local overlap = intersectRects(t, base_rect)
-        if overlap and ttile and ttile.bb then
-            -- Tile is already scaled to requested zoom by renderPage
-            -- Calculate source position in the tile
-            local src_x = math.floor((overlap.x - t.x) * zoom + 0.5)
-            local src_y = math.floor((overlap.y - t.y) * zoom + 0.5)
-            local dst_x = math.floor(x + (overlap.x - base_rect.x) * zoom + 0.5)
-            local dst_y = math.floor(y + (overlap.y - base_rect.y) * zoom + 0.5)
-            local w = math.floor(overlap.w * zoom + 0.5)
-            local h = math.floor(overlap.h * zoom + 0.5)
-            if w > 0 and h > 0 then
-                target:blitFrom(ttile.bb, dst_x, dst_y, src_x, src_y, w, h)
+            -- Only draw the visible overlap against the original (non-expanded) rect
+            local overlap = intersectRects(t, base_rect)
+            if overlap and ttile and ttile.bb then
+                -- Tile is already scaled to requested zoom by renderPage
+                -- Calculate source position in the tile
+                local src_x = math.floor((overlap.x - t.x) * zoom + 0.5)
+                local src_y = math.floor((overlap.y - t.y) * zoom + 0.5)
+                local dst_x = math.floor(x + (overlap.x - base_rect.x) * zoom + 0.5)
+                local dst_y = math.floor(y + (overlap.y - base_rect.y) * zoom + 0.5)
+                local w = math.floor(overlap.w * zoom + 0.5)
+                local h = math.floor(overlap.h * zoom + 0.5)
+                if w > 0 and h > 0 then
+                    target:blitFrom(ttile.bb, dst_x, dst_y, src_x, src_y, w, h)
+                end
             end
         end
-    end
+    end)
     if batch_started then
         self:_endTileBatch()
+    end
+    if not ok then
+        logger.warn("VID:drawPageTiled error during render", "page", pageno, "error", err)
+        return false
     end
     return true
 end
