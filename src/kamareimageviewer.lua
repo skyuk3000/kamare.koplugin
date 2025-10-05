@@ -48,8 +48,6 @@ local KamareImageViewer = InputContainer:extend{
     prefetch_pages = 1,
     page_gap_height = 8,
 
-    image_padding = Size.margin.small,
-
     virtual_document = nil,
     scroll_mode = true,
     scroll_offset = 0,
@@ -58,6 +56,8 @@ local KamareImageViewer = InputContainer:extend{
     _pending_scroll_page = nil,
 
     scroll_distance = 25, -- percentage (25, 50, 75, 100)
+    scroll_margin = 0, -- horizontal margin in scroll mode (left/right only)
+    page_padding = 0, -- uniform padding on all sides
 
     footer_settings = {
         enabled = true,
@@ -185,7 +185,8 @@ end
 function KamareImageViewer:_initCanvas()
     self.canvas = VirtualPageCanvas:new{
         document = self.virtual_document,
-        padding = self.image_padding,
+        padding = self.page_padding,
+        horizontal_margin = self.scroll_margin,
         background = Blitbuffer.COLOR_WHITE,
         scroll_mode = self.scroll_mode,
         page_gap_height = self.page_gap_height,
@@ -242,6 +243,8 @@ function KamareImageViewer:loadSettings()
     self.configurable.zoom_mode_type = self.zoom_mode
     self.configurable.page_gap_height = self.page_gap_height
     self.configurable.scroll_distance = self.scroll_distance
+    self.configurable.scroll_margin = self.scroll_margin
+    self.configurable.page_padding = self.page_padding
 
     if settings then
         self.configurable:loadSettings(settings, self.options.prefix .. "_")
@@ -258,6 +261,8 @@ function KamareImageViewer:loadSettings()
     self.zoom_mode = self.configurable.zoom_mode_type
     self.page_gap_height = self.configurable.page_gap_height or 8
     self.scroll_distance = self.configurable.scroll_distance or 25
+    self.scroll_margin = self.configurable.scroll_margin or 0
+    self.page_padding = self.configurable.page_padding or 0
 
     logger.info("KIV:loadSettings applied",
         "footer_mode", self.footer_settings.mode,
@@ -275,6 +280,8 @@ function KamareImageViewer:syncAndSaveSettings()
     self.configurable.zoom_mode_type = self.zoom_mode
     self.configurable.page_gap_height = self.page_gap_height
     self.configurable.scroll_distance = self.scroll_distance
+    self.configurable.scroll_margin = self.scroll_margin
+    self.configurable.page_padding = self.page_padding
 
     self:saveSettings()
 end
@@ -601,6 +608,8 @@ function KamareImageViewer:onShowConfigMenu()
     self.configurable.zoom_mode_type = self.zoom_mode
     self.configurable.page_gap_height = self.page_gap_height
     self.configurable.scroll_distance = self.scroll_distance
+    self.configurable.scroll_margin = self.scroll_margin
+    self.configurable.page_padding = self.page_padding
 
     self.config_dialog = ConfigDialog:new{
         document = nil,
@@ -733,6 +742,50 @@ function KamareImageViewer:onScrollDistanceUpdate(value)
     self.scroll_distance = distance
     self.configurable.scroll_distance = distance
     self:syncAndSaveSettings()
+
+    return true
+end
+
+function KamareImageViewer:onScrollMarginUpdate(value)
+    local margin = tonumber(value)
+    if not margin then return false end
+    margin = math.max(0, margin)
+    if margin == self.scroll_margin then return true end
+
+    self.scroll_margin = margin
+    self.configurable.scroll_margin = margin
+    self:syncAndSaveSettings()
+
+    if self.canvas then
+        self.canvas:setHorizontalMargin(margin)
+    end
+
+    if self.scroll_mode then
+        self._pending_scroll_page = self._images_list_cur
+        self:update()
+        UIManager:nextTick(function() self:prefetchUpcomingTiles() end)
+    end
+
+    return true
+end
+
+function KamareImageViewer:onPagePaddingUpdate(value)
+    local padding = tonumber(value)
+    if not padding then return false end
+    padding = math.max(0, padding)
+    if padding == self.page_padding then return true end
+
+    self.page_padding = padding
+    self.configurable.page_padding = padding
+    self:syncAndSaveSettings()
+
+    if self.canvas then
+        self.canvas:setPadding(padding)
+    end
+
+    self._pending_scroll_page = self._images_list_cur
+    self:update()
+    UIManager:nextTick(function() self:prefetchUpcomingTiles() end)
 
     return true
 end

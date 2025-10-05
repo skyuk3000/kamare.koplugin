@@ -21,6 +21,7 @@ local VirtualPageCanvas = Widget:extend{
     scroll_offset = 0,
 
     padding = 0,
+    horizontal_margin = 0,
     background = Blitbuffer.COLOR_WHITE,
     page_gap_height = 8,
 
@@ -150,6 +151,18 @@ function VirtualPageCanvas:setPadding(padding)
     end
 end
 
+function VirtualPageCanvas:setHorizontalMargin(margin)
+    margin = math.max(0, tonumber(margin) or 0)
+    if margin ~= self.horizontal_margin then
+        logger.info("VPC:setHorizontalMargin", "from", self.horizontal_margin, "to", margin)
+        self.horizontal_margin = margin
+        if self.mode == "scroll" then
+            self._layout_dirty = true
+            self:markDirty()
+        end
+    end
+end
+
 function VirtualPageCanvas:setBackground(color)
     if self.background ~= color then
         logger.info("VPC:setBackground", "from", self.background, "to", color)
@@ -196,9 +209,13 @@ function VirtualPageCanvas:setSize(w, h)
 end
 
 function VirtualPageCanvas:getViewportSize()
-    local w = math.max(0, self.dimen.w - 2 * self.padding)
+    local horizontal_spacing = self.padding
+    if self.mode == "scroll" then
+        horizontal_spacing = self.padding + (self.horizontal_margin or 0)
+    end
+    local w = math.max(0, self.dimen.w - 2 * horizontal_spacing)
     local h = math.max(0, self.dimen.h - 2 * self.padding)
-    logger.dbg("VPC:getViewportSize", "canvas_w", self.dimen.w, "canvas_h", self.dimen.h, "padding", self.padding, "viewport_w", w, "viewport_h", h)
+    logger.dbg("VPC:getViewportSize", "canvas_w", self.dimen.w, "canvas_h", self.dimen.h, "padding", self.padding, "h_margin", self.horizontal_margin or 0, "viewport_w", w, "viewport_h", h)
     return w, h
 end
 
@@ -676,7 +693,8 @@ function VirtualPageCanvas:paintScroll(target, x, y, retry)
 
         local layout = page_info.layout
         local scaled_w = math.floor((layout.rotated_width or layout.native_width) * zoom + 0.5)
-        local dest_x = x + self.padding + math.floor((viewport_w - scaled_w) / 2)
+        local horizontal_spacing = self.padding + (self.horizontal_margin or 0)
+        local dest_x = x + horizontal_spacing + math.floor((viewport_w - scaled_w) / 2)
         local dest_y = y + self.padding + stacked_y
 
         local rect = Geom:new{

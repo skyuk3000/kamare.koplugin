@@ -25,8 +25,8 @@ local KamareOptions = {
                 default_value = 8,
                 event = "PageGapUpdate",
                 args = {0, 2, 4, 8, 16, 32, 64},
-                enabled_func = function (configurable)
-                    return optionsutil.enableIfEquals(configurable, "scroll_mode", 1)
+                show_func = function (configurable)
+                    return configurable.scroll_mode == 1
                 end,
                 name_text_hold_callback = optionsutil.showValues,
                 name_text_unit = true,
@@ -47,8 +47,8 @@ local KamareOptions = {
                 default_value = 25,
                 event = "ScrollDistanceUpdate",
                 args = {25, 50, 75, 100},
-                enabled_func = function (configurable)
-                    return optionsutil.enableIfEquals(configurable, "scroll_mode", 1)
+                show_func = function (configurable)
+                    return configurable.scroll_mode == 1
                 end,
                 name_text_hold_callback = optionsutil.showValues,
                 name_text_unit = true,
@@ -59,7 +59,7 @@ local KamareOptions = {
                     value_min = 0, value_max = 100,
                     precision = "%.1f",
                 },
-            }
+            },
         }
     },
     {
@@ -74,6 +74,47 @@ local KamareOptions = {
                 event = "DefineZoom",
                 args = {0,1,2},
                 help_text = _([[Set how the page should be resized to fit the screen.]]),
+            },
+            {
+                name = "scroll_margin",
+                name_text = _("Horizontal Margin"),
+                buttonprogress = true,
+                values = {0, 10, 20, 30, 40, 60, 80, 100},
+                default_pos = 1,
+                default_value = 0,
+                event = "ScrollMarginUpdate",
+                args = {0, 10, 20, 30, 40, 60, 80, 100},
+                show_func = function (configurable)
+                    return configurable.scroll_mode == 1
+                end,
+                name_text_hold_callback = optionsutil.showValues,
+                name_text_unit = true,
+                help_text = _([[In continuous view mode, sets the horizontal margin on the left and right sides of the page.]]),
+                more_options = true,
+                more_options_param = {
+                    value_step = 5, value_hold_step = 20,
+                    value_min = 0, value_max = 300,
+                    precision = "%.0f",
+                },
+            },
+            {
+                name = "page_padding",
+                name_text = _("Page Padding"),
+                buttonprogress = true,
+                values = {0, 2, 4, 8, 16, 32},
+                default_pos = 1,
+                default_value = 0,
+                event = "PagePaddingUpdate",
+                args = {0, 2, 4, 8, 16, 32},
+                name_text_hold_callback = optionsutil.showValues,
+                name_text_unit = true,
+                help_text = _([[Sets uniform padding on all sides to prevent pages from touching the screen borders.]]),
+                more_options = true,
+                more_options_param = {
+                    value_step = 1, value_hold_step = 5,
+                    value_min = 0, value_max = 50,
+                    precision = "%.0f",
+                },
             }
         }
     },
