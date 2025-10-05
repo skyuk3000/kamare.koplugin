@@ -46,6 +46,7 @@ local KamareImageViewer = InputContainer:extend{
     configurable = Configurable:new(),
     options = KamareOptions,
     prefetch_pages = 1,
+    page_gap_height = 8,
 
     image_padding = Size.margin.small,
 
@@ -187,6 +188,7 @@ function KamareImageViewer:_initCanvas()
         padding = self.image_padding,
         background = Blitbuffer.COLOR_WHITE,
         scroll_mode = self.scroll_mode,
+        page_gap_height = self.page_gap_height,
     }
 
     self.canvas_container = CenterContainer:new{
@@ -238,6 +240,7 @@ function KamareImageViewer:loadSettings()
     self.configurable.prefetch_pages = self.prefetch_pages
     self.configurable.scroll_mode = self.scroll_mode and 1 or 0
     self.configurable.zoom_mode_type = self.zoom_mode
+    self.configurable.page_gap_height = self.page_gap_height
 
     if settings then
         self.configurable:loadSettings(settings, self.options.prefix .. "_")
@@ -252,6 +255,7 @@ function KamareImageViewer:loadSettings()
     self.prefetch_pages = self.configurable.prefetch_pages
     self.scroll_mode = (self.configurable.scroll_mode == 1)
     self.zoom_mode = self.configurable.zoom_mode_type
+    self.page_gap_height = self.configurable.page_gap_height or 8
 
     logger.info("KIV:loadSettings applied",
         "footer_mode", self.footer_settings.mode,
@@ -267,6 +271,7 @@ function KamareImageViewer:syncAndSaveSettings()
     self.configurable.prefetch_pages = self.prefetch_pages
     self.configurable.scroll_mode = self.scroll_mode and 1 or 0
     self.configurable.zoom_mode_type = self.zoom_mode
+    self.configurable.page_gap_height = self.page_gap_height
 
     self:saveSettings()
 end
@@ -588,6 +593,7 @@ function KamareImageViewer:onShowConfigMenu()
     self.configurable.prefetch_pages = self.prefetch_pages
     self.configurable.scroll_mode  = self.scroll_mode and 1 or 0
     self.configurable.zoom_mode_type = self.zoom_mode
+    self.configurable.page_gap_height = self.page_gap_height
 
     self.config_dialog = ConfigDialog:new{
         document = nil,
@@ -674,6 +680,29 @@ end
 
 function KamareImageViewer:onDefineZoom(mode)
     return self:setZoomMode(mode)
+end
+
+function KamareImageViewer:onPageGapUpdate(value)
+    local gap = tonumber(value)
+    if not gap then return false end
+    gap = math.max(0, gap)
+    if gap == self.page_gap_height then return true end
+
+    self.page_gap_height = gap
+    self.configurable.page_gap_height = gap
+    self:syncAndSaveSettings()
+
+    if self.canvas then
+        self.canvas:setPageGapHeight(gap)
+    end
+
+    if self.scroll_mode then
+        self._pending_scroll_page = self._images_list_cur
+        self:update()
+        UIManager:nextTick(function() self:prefetchUpcomingTiles() end)
+    end
+
+    return true
 end
 
 ------------------------------------------------------------------------

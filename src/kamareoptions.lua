@@ -1,3 +1,4 @@
+local optionsutil = require("ui/data/optionsutil")
 local _ = require("gettext")
 
 local KamareOptions = {
@@ -8,18 +9,35 @@ local KamareOptions = {
             {
                 name = "scroll_mode",
                 name_text = _("View Mode"),
-                toggle = {_("page"), _("scroll")},
+                toggle = {_("page"), _("continuous")},
                 values = {0, 1},
                 default_value = 0,
                 event = "SetScrollMode",
                 args = {0, 1},
                 help_text = _([[- 'page' mode shows only one page of the document at a time.- 'scroll' mode allows you to scroll the pages like you would in a web browser.]]),
-            }
-        }
-    },
-    {
-        icon = "appbar.pagefit",
-        options = {
+            },
+            {
+                name = "page_gap_height",
+                name_text = _("Page Gap"),
+                buttonprogress = true,
+                values = {0, 2, 4, 8, 16, 32, 64},
+                default_pos = 4,
+                default_value = 8,
+                event = "PageGapUpdate",
+                args = {0, 2, 4, 8, 16, 32, 64},
+                enabled_func = function (configurable)
+                    return optionsutil.enableIfEquals(configurable, "scroll_mode", 1)
+                end,
+                name_text_hold_callback = optionsutil.showValues,
+                name_text_unit = true,
+                help_text = _([[In continuous view mode, sets the thickness of the separator between document pages.]]),
+                more_options = true,
+                more_options_param = {
+                    value_step = 1, value_hold_step = 10,
+                    value_min = 0, value_max = 256,
+                    precision = "%.1f",
+                },
+            },
             {
                 name = "zoom_mode_type",
                 name_text = _("Fit"),

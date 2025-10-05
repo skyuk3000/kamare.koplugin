@@ -22,7 +22,7 @@ local VirtualPageCanvas = Widget:extend{
 
     padding = 0,
     background = Blitbuffer.COLOR_WHITE,
-
+    page_gap_height = 8,
 
     _virtual_height = 0,
     _layout_dirty = true,
@@ -155,6 +155,18 @@ function VirtualPageCanvas:setBackground(color)
         logger.info("VPC:setBackground", "from", self.background, "to", color)
         self.background = color
         self:markDirty()
+    end
+end
+
+function VirtualPageCanvas:setPageGapHeight(gap)
+    gap = math.max(0, tonumber(gap) or 0)
+    if math.abs(gap - (self.page_gap_height or 0)) > 0.5 then
+        logger.info("VPC:setPageGapHeight", "from", self.page_gap_height, "to", gap)
+        self.page_gap_height = gap
+        if self.mode == "scroll" then
+            self._layout_dirty = true
+            self:markDirty()
+        end
     end
 end
 
@@ -643,7 +655,7 @@ function VirtualPageCanvas:paintScroll(target, x, y, retry)
     end
 
 
-    local gap_px = math.floor(((self.document and self.document:getPageGapHeight()) or 0) * zoom + 0.5)
+    local gap_px = math.floor((self.page_gap_height or 0) * zoom + 0.5)
     local prev_page
     for _, page_info in ipairs(visible_pages) do
         -- Insert inter-page gap (scaled) before subsequent pages
