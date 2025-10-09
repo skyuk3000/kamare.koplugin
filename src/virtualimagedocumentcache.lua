@@ -1,8 +1,3 @@
---[[
-Singleton LRU cache for VirtualImageDocument tiles.
-Similar to DocCache but specialized for virtual image document rendering.
---]]
-
 local LRUCache = require("lrucache")
 local logger = require("logger")
 local util = require("util")

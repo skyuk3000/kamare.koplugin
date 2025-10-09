@@ -1,9 +1,7 @@
 local BD = require("ui/bidi")
 local Device = require("device")
-local Event = require("ui/event")
 local KamareFooter = require("kamarefooter")
 local MD5 = require("ffi/sha2").md5
-local util = require("util")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local FrameContainer = require("ui/widget/container/framecontainer")
@@ -12,9 +10,7 @@ local Blitbuffer = require("ffi/blitbuffer")
 local UIManager = require("ui/uimanager")
 local Screen = Device.screen
 local logger = require("logger")
-local LuaSettings = require("luasettings")
 local DocCache = require("document/doccache")
-local DataStorage = require("datastorage")
 local ConfigDialog = require("ui/widget/configdialog")
 local CanvasContext = require("document/canvascontext")
 local KamareOptions = require("kamareoptions")
@@ -22,7 +18,6 @@ local Configurable = require("frontend/configurable")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local TitleBar = require("ui/widget/titlebar")
 local Geom = require("ui/geometry")
-local Size = require("ui/size")
 local VirtualImageDocument = require("virtualimagedocument")
 local VirtualPageCanvas = require("virtualpagecanvas")
 local KavitaClient = require("kavitaclient")
@@ -225,13 +220,17 @@ function KamareImageViewer:_setupStatisticsInterface()
 
     logger.info("KamareImageViewer: Setting up statistics interface")
 
-    -- Create a wrapper that provides getCurrentPage() for statistics
+    -- Create a wrapper that provides getCurrentPage() and other methods for statistics
     -- This delegates to the viewer's state, not the document's state
     local viewer_ref = self
     local doc_wrapper = setmetatable({}, {
         __index = function(t, k)
             if k == "getCurrentPage" then
                 return function() return viewer_ref._images_list_cur end
+            elseif k == "getPageCount" then
+                return function() return viewer_ref._images_list_nb end
+            elseif k == "hasHiddenFlows" then
+                return function() return false end
             else
                 return viewer_ref.virtual_document[k]
             end
@@ -242,7 +241,13 @@ function KamareImageViewer:_setupStatisticsInterface()
     self.document = doc_wrapper
     self.ui.document = doc_wrapper
     -- Statistics plugin also needs document on its own instance
-    self.ui.statistics.document = doc_wrapper
+    if self.ui.statistics then
+        logger.dbg("KamareImageViewer: Setting document on statistics plugin")
+        self.ui.statistics.document = doc_wrapper
+        self.ui.statistics.view = nil  -- Will be set below
+    else
+        logger.warn("KamareImageViewer: self.ui.statistics is nil!")
+    end
 
     -- Generate MD5 hash for this virtual document
     -- Since virtual paths like "virtualimage://..." can't be opened as files,
@@ -336,7 +341,7 @@ function KamareImageViewer:_setupStatisticsInterface()
         self.dictionary = self.ui.dictionary
     end
 
-    -- Provide view stub with footer
+    -- Provide view stub with footer and state
     local view_stub = {
         footer = {
             maybeUpdateFooter = function()
@@ -344,12 +349,18 @@ function KamareImageViewer:_setupStatisticsInterface()
                     viewer_ref:updateFooter()
                 end
             end
+        },
+        state = {
+            page = viewer_ref._images_list_cur,
         }
     }
 
     self.view = view_stub
     -- Statistics plugin also needs view on its own instance
-    self.ui.statistics.view = view_stub
+    if self.ui.statistics then
+        self.ui.statistics.view = view_stub
+        logger.dbg("KamareImageViewer: Statistics plugin document set?", self.ui.statistics.document ~= nil)
+    end
 
     -- Use parent bookinfo if available
     if not self.bookinfo and self.ui.bookinfo then
@@ -1549,14 +1560,24 @@ function KamareImageViewer:onClose()
         logger.info("KamareImageViewer: Calling statistics:onCloseDocument")
         self.ui.statistics:onCloseDocument()
 
-        -- Clean up properties we set on self.ui to avoid interfering with FileManager
-        logger.dbg("KamareImageViewer: Cleaning up ui properties")
+        -- Reset is_doc flag so statistics menu items are disabled after close
+        -- (ReaderUI destroys the statistics instance on close, but we're reusing FileManager's instance)
+        self.ui.statistics.is_doc = false
+    end
+
+    -- Clear UI state to avoid interfering with FileManager
+    if self.ui then
+        logger.info("KamareImageViewer: Clearing UI state")
+        self.ui.document = nil
         self.ui.doc_settings = nil
         self.ui.doc_props = nil
         self.ui.annotation = nil
-        self.ui.document = nil
-        self.ui.statistics.document = nil
-        self.ui.statistics.view = nil
+
+        -- Clear statistics plugin state
+        if self.ui.statistics then
+            self.ui.statistics.document = nil
+            self.ui.statistics.view = nil
+        end
     end
 
     if self.config_dialog then

@@ -1,12 +1,11 @@
+local logger = require("logger")
+
 --[[
     LRU (Least Recently Used) Cache
 
     A memory-bounded cache that evicts the least recently used items when full.
     Items are kept in order of usage, with most recently used at the front.
 ]]
-
-local logger = require("logger")
-
 local LRUCache = {}
 LRUCache.__index = LRUCache
 
