@@ -1137,8 +1137,7 @@ function KamareImageViewer:_updatePageFromScroll(silent)
     local check_offset = (self.scroll_offset or 0) + viewport_h
     local new_page = self.virtual_document:getPageAtOffset(check_offset, zoom, self:_getRotationAngle(), self.zoom_mode, viewport_w)
 
-    -- Predictive prefetching: trigger when we're 70% through the current page
-    -- This gives time for the next page to be cached before we scroll into it
+    -- Predictive prefetching: predict if next scroll will cross 70% threshold
     local should_prefetch = false
     if self._images_list_cur < self._images_list_nb then
         local current_page_start = self.virtual_document:getScrollPositionForPage(self._images_list_cur, zoom, self:_getRotationAngle(), self.zoom_mode, viewport_w)
@@ -1146,14 +1145,27 @@ function KamareImageViewer:_updatePageFromScroll(silent)
         local current_page_height = next_page_start - current_page_start
 
         if current_page_height > 0 then
-            local progress_in_page = (self.scroll_offset or 0) - current_page_start
+            local current_offset = self.scroll_offset or 0
+            local progress_in_page = current_offset - current_page_start
             local page_progress = progress_in_page / current_page_height
 
-            -- Trigger prefetch at 70% through the page, but only once per page
-            if page_progress >= 0.70 and not self._prefetch_triggered_for_page then
+            -- Calculate where we'd be after another scroll based on scroll_distance setting
+            local step_ratio = (self.scroll_distance or 25) / 100
+            local scroll_step = viewport_h * step_ratio
+            local predicted_offset = current_offset + scroll_step
+            local predicted_progress = (predicted_offset - current_page_start) / current_page_height
+
+            -- Trigger prefetch if we're past 70% OR if next scroll will take us past 70%
+            local threshold = 0.70
+            if (page_progress >= threshold or predicted_progress >= threshold) and self._prefetch_triggered_for_page ~= self._images_list_cur then
                 should_prefetch = true
                 self._prefetch_triggered_for_page = self._images_list_cur
-                logger.dbg(string.format("KamareImageViewer: Predictive prefetch at %.1f%% through page %d", page_progress * 100, self._images_list_cur))
+                if predicted_progress >= threshold and page_progress < threshold then
+                    logger.dbg(string.format("KamareImageViewer: Preemptive prefetch at %.1f%% (next scroll will reach %.1f%%) for page %d",
+                        page_progress * 100, predicted_progress * 100, self._images_list_cur))
+                else
+                    logger.dbg(string.format("KamareImageViewer: Predictive prefetch at %.1f%% through page %d", page_progress * 100, self._images_list_cur))
+                end
             end
         end
     end
