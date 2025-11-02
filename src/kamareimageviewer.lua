@@ -1136,6 +1136,28 @@ function KamareImageViewer:_updatePageFromScroll(silent)
     local viewport_w, viewport_h = self.canvas and self.canvas:getViewportSize() or 0, 0
     local check_offset = (self.scroll_offset or 0) + viewport_h
     local new_page = self.virtual_document:getPageAtOffset(check_offset, zoom, self:_getRotationAngle(), self.zoom_mode, viewport_w)
+
+    -- Predictive prefetching: trigger when we're 70% through the current page
+    -- This gives time for the next page to be cached before we scroll into it
+    local should_prefetch = false
+    if self._images_list_cur < self._images_list_nb then
+        local current_page_start = self.virtual_document:getScrollPositionForPage(self._images_list_cur, zoom, self:_getRotationAngle(), self.zoom_mode, viewport_w)
+        local next_page_start = self.virtual_document:getScrollPositionForPage(self._images_list_cur + 1, zoom, self:_getRotationAngle(), self.zoom_mode, viewport_w)
+        local current_page_height = next_page_start - current_page_start
+
+        if current_page_height > 0 then
+            local progress_in_page = (self.scroll_offset or 0) - current_page_start
+            local page_progress = progress_in_page / current_page_height
+
+            -- Trigger prefetch at 70% through the page, but only once per page
+            if page_progress >= 0.70 and not self._prefetch_triggered_for_page then
+                should_prefetch = true
+                self._prefetch_triggered_for_page = self._images_list_cur
+                logger.dbg(string.format("KamareImageViewer: Predictive prefetch at %.1f%% through page %d", page_progress * 100, self._images_list_cur))
+            end
+        end
+    end
+
     if new_page ~= self._images_list_cur then
         if not silent then self:recordViewingTimeIfValid() end
         self._images_list_cur = new_page
@@ -1149,11 +1171,17 @@ function KamareImageViewer:_updatePageFromScroll(silent)
             self.ui.statistics:onPageUpdate(new_page)
         end
 
-        UIManager:nextTick(function() self:prefetchUpcomingTiles() end)
+        -- Reset prefetch trigger for new page
+        self._prefetch_triggered_for_page = nil
+        should_prefetch = true  -- Also prefetch when page changes
     elseif not silent then
         self:updateFooter()
         -- Check if we're at the bottom of the last page and need to post progress
         self:_postViewProgress()
+    end
+
+    if should_prefetch then
+        UIManager:nextTick(function() self:prefetchUpcomingTiles() end)
     end
 end
 
@@ -1258,6 +1286,19 @@ function KamareImageViewer:updateImageOnly()
 end
 
 function KamareImageViewer:calculateAdaptivePrefetch()
+    -- On first page (initial load), only prefetch 1 page for quick startup
+    if self._images_list_cur <= 1 and not self._initial_prefetch_done then
+        self._initial_prefetch_done = true
+        logger.dbg("KamareImageViewer: Initial load - prefetching only 1 page for quick startup")
+        return 1
+    end
+
+    -- In continuous scroll mode, only prefetch 1 page to avoid blocking
+    if self.scroll_mode then
+        logger.dbg("KamareImageViewer: Continuous scroll mode - prefetching only 1 page to avoid blocking")
+        return 1
+    end
+
     local ok, cache_stats = pcall(function()
         return VIDCache:stats()
     end)
@@ -1270,6 +1311,7 @@ function KamareImageViewer:calculateAdaptivePrefetch()
     local total_size = cache_stats.total_size or 0
     local max_size = cache_stats.max_size or 0
     local count = cache_stats.count or 0
+    local utilization = cache_stats.utilization or 0
 
     if max_size <= 0 then
         logger.warn("KamareImageViewer: Invalid cache max_size, using fallback prefetch")
@@ -1280,25 +1322,31 @@ function KamareImageViewer:calculateAdaptivePrefetch()
     local avg_item_size
     if count > 0 and total_size > 0 then
         avg_item_size = total_size / count
+        logger.dbg(string.format("KamareImageViewer: Cache avg item size: %.2fMB", avg_item_size / 1024 / 1024))
     else
         -- Fallback: conservative estimate (2MB per item)
         avg_item_size = 2 * 1024 * 1024
+        logger.dbg("KamareImageViewer: Using fallback avg item size: 2MB")
     end
 
-    local total_capacity = max_size / avg_item_size
+    -- Calculate how much space is available (not just total capacity)
+    local available_size = max_size - total_size
+    local pages_that_fit = math.floor(available_size / avg_item_size)
 
-    -- Use 15% of total capacity for prefetch
-    local prefetch_percentage = 0.15
-    local prefetch_items = total_capacity * prefetch_percentage
+    -- Use 50% of available space for prefetch (conservative)
+    local prefetch_pages = math.floor(pages_that_fit * 0.5)
 
-    local prefetch_pages = math.floor(prefetch_items)
+    -- Cap at 3 pages maximum
+    prefetch_pages = math.max(0, math.min(3, prefetch_pages))
 
-    prefetch_pages = math.max(0, math.min(5, prefetch_pages))
-
-    -- Safety check: if cache is >95% full, be very conservative
-    if cache_stats.utilization > 0.95 then
+    -- Safety check: if cache is >80% full, be very conservative
+    if utilization > 0.80 then
         prefetch_pages = math.min(1, prefetch_pages)
+        logger.dbg(string.format("KamareImageViewer: Cache high utilization (%.1f%%), limiting to 1 page", utilization * 100))
     end
+
+    logger.dbg(string.format("KamareImageViewer: Adaptive prefetch: %d pages (utilization: %.1f%%, available space: %.2fMB)",
+        prefetch_pages, utilization * 100, available_size / 1024 / 1024))
 
     return prefetch_pages
 end
@@ -1306,42 +1354,92 @@ end
 function KamareImageViewer:prefetchUpcomingTiles()
     if not self.virtual_document then return end
 
-    local count
+    local target_buffer_size
     if self.prefetch_pages == -1 then
-        count = self:calculateAdaptivePrefetch()
+        target_buffer_size = self:calculateAdaptivePrefetch()
     else
-        count = tonumber(self.prefetch_pages) or 0
+        target_buffer_size = tonumber(self.prefetch_pages) or 0
     end
 
-    if count <= 0 then return end
+    if target_buffer_size <= 0 then return end
 
     local zoom = self:getCurrentZoom()
-    local pages = {}
+    local rotation = self:_getRotationAngle()
+
+    -- Determine starting page (last visible page)
+    local start_page = self._images_list_cur
 
     if self.scroll_mode and self.canvas then
         local viewport_w, viewport_h = self.canvas:getViewportSize()
-        local visible = self.virtual_document:getVisiblePagesAtOffset(self.scroll_offset or 0, viewport_h, zoom, self:_getRotationAngle(), self.zoom_mode, viewport_w) or {}
-        local last = self._images_list_cur
+        local visible = self.virtual_document:getVisiblePagesAtOffset(self.scroll_offset or 0, viewport_h, zoom, rotation, self.zoom_mode, viewport_w) or {}
         if #visible > 0 then
-            last = visible[#visible].page_num
-        end
-        for i = 1, count do
-            table.insert(pages, last + i)
-        end
-    else
-        for i = 1, count do
-            table.insert(pages, (self._images_list_cur or 0) + i)
+            start_page = visible[#visible].page_num
         end
     end
 
-    for _, page in ipairs(pages) do
-        if page >= 1 and page <= (self._images_list_nb or 0) then
-            UIManager:nextTick(function()
-                pcall(function()
-                    self.virtual_document:prefetchPage(page, zoom, self:_getRotationAngle())
-                end)
-            end)
+    -- In page mode, maintain a buffer of N pages ahead
+    -- Count how many pages ahead are already cached
+    local cached_ahead = 0
+    local first_uncached = nil
+
+    for i = 1, target_buffer_size do
+        local check_page = start_page + i
+        if check_page > self._images_list_nb then break end
+
+        local hash = self.virtual_document:getFullPageHash(check_page, zoom, rotation, self.virtual_document.gamma)
+        local cached = VIDCache:getNativeTile(hash)
+
+        if cached then
+            cached_ahead = cached_ahead + 1
+        elseif not first_uncached then
+            first_uncached = check_page
         end
+    end
+
+    -- Calculate how many pages we need to prefetch to maintain buffer
+    local pages_needed = target_buffer_size - cached_ahead
+
+    if pages_needed <= 0 then
+        logger.dbg(string.format("KamareImageViewer: Buffer full - %d/%d pages cached ahead of page %d",
+            cached_ahead, target_buffer_size, start_page))
+        return
+    end
+
+    -- Find pages to prefetch starting from first uncached
+    local pages_to_prefetch = {}
+    local pages_skipped = {}
+    local candidate = first_uncached or (start_page + 1)
+
+    while #pages_to_prefetch < pages_needed and candidate <= self._images_list_nb do
+        -- Check if page is already cached
+        local hash = self.virtual_document:getFullPageHash(candidate, zoom, rotation, self.virtual_document.gamma)
+        local cached = VIDCache:getNativeTile(hash)
+
+        if not cached then
+            table.insert(pages_to_prefetch, candidate)
+        else
+            table.insert(pages_skipped, candidate)
+        end
+
+        candidate = candidate + 1
+    end
+
+    if #pages_to_prefetch > 0 or #pages_skipped > 0 then
+        logger.dbg(string.format("KamareImageViewer: Prefetch from page %d - buffer: %d/%d, prefetching: [%s], skipped: [%s]",
+            start_page,
+            cached_ahead,
+            target_buffer_size,
+            table.concat(pages_to_prefetch, ", "),
+            table.concat(pages_skipped, ", ")))
+    end
+
+    -- Prefetch uncached pages
+    for _, page in ipairs(pages_to_prefetch) do
+        UIManager:nextTick(function()
+            pcall(function()
+                self.virtual_document:prefetchPage(page, zoom, rotation)
+            end)
+        end)
     end
 end
 

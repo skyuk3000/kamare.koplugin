@@ -19,8 +19,8 @@ end
 
 local function computeNativeCacheSize()
     local total = calcTileCacheSize()
-    -- Allocate 2/3 of total to native resolution tiles
-    local native_size = math.floor(total * 2 / 3)
+    -- Allocate 1/2 of total to native resolution tiles
+    local native_size = math.floor(total / 2)
 
     local mb_size = native_size / 1024 / 1024
     if mb_size >= 8 then
@@ -34,16 +34,18 @@ end
 
 local function computeScaledCacheSize()
     local total = calcTileCacheSize()
-    -- Allocate 1/3 of total to scaled tiles
-    local scaled_size = math.floor(total / 3)
+    -- Allocate 1/2 of total to scaled tiles
+    -- Scaled tiles are used more heavily in continuous scroll mode
+    local scaled_size = math.floor(total / 2)
 
     local mb_size = scaled_size / 1024 / 1024
-    if mb_size >= 4 then
+    -- Minimum 24MB for continuous scroll mode (allows ~16 tiles at ~1.5MB each)
+    if mb_size >= 24 then
         logger.dbg(string.format("Allocating %dMB for VirtualImageDocument scaled tile cache", mb_size))
         return scaled_size
     else
-        logger.dbg("VirtualImageDocument scaled cache below minimum, using 4MB")
-        return 4 * 1024 * 1024
+        logger.dbg("VirtualImageDocument scaled cache below minimum, using 24MB")
+        return 24 * 1024 * 1024
     end
 end
 
@@ -125,12 +127,6 @@ end
 function VIDCache:checkScaledCacheParams(zoom, rotation)
     if not self._scaled_cache then
         return false
-    end
-
-    if self._scaled_cache_zoom ~= nil then
-        if math.abs(self._scaled_cache_zoom - zoom) > 0.001 or self._scaled_cache_rotation ~= rotation then
-            self:clearScaledCache()
-        end
     end
 
     self._scaled_cache_zoom = zoom
