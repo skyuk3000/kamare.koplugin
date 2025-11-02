@@ -1298,10 +1298,11 @@ function KavitaBrowser:onMenuHold(item)
             {
                 text = "\u{2713} " .. _("Mark as read"),
                 callback = function()
+                    UIManager:close(dialog)
                     -- Mark as read by reporting the last page as progress
                     local progress = {
-                        volumeId  = chapter.volumeId,
-                        chapterId = chapter.id,
+                        volumeId  = ch.volumeId,
+                        chapterId = ch.id,
                         pageNum   = pages,  -- i lost the thread on page numbers so lets overshoot
                         seriesId  = self.current_series_id,
                         libraryId = self.current_series_library_id,

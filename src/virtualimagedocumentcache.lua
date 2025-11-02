@@ -149,4 +149,23 @@ function VIDCache:clear()
     self._scaled_cache_rotation = nil
 end
 
+function VIDCache:stats()
+    if not self._native_cache then
+        self:init()
+    end
+
+    local native_stats = self._native_cache:stats()
+    local scaled_stats = self._scaled_cache:stats()
+
+    return {
+        native = native_stats,
+        scaled = scaled_stats,
+        -- Use the higher utilization of the two caches
+        utilization = math.max(native_stats.utilization, scaled_stats.utilization),
+        total_size = native_stats.total_size + scaled_stats.total_size,
+        max_size = native_stats.max_size + scaled_stats.max_size,
+        count = native_stats.count + scaled_stats.count,
+    }
+end
+
 return VIDCache

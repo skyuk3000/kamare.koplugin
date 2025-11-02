@@ -314,9 +314,9 @@ function VirtualPageCanvas:recalculateLayout()
         end
     end
 
-    local _, viewport_h = self:getViewportSize()
+    local viewport_w, viewport_h = self:getViewportSize()
     if self.document.getVirtualHeight then
-        local total = self.document:getVirtualHeight(self.zoom, self.rotation)
+        local total = self.document:getVirtualHeight(self.zoom, self.rotation, self.zoom_mode, viewport_w)
         if total and total > 0 then
             self._virtual_height = total
         else
@@ -358,7 +358,7 @@ end
 
 function VirtualPageCanvas:_renderFullPage(page)
     local ok, tile = pcall(function()
-        return self.document:renderPage(page, nil, self.zoom, self.rotation)
+        return self.document:renderPage(page, nil, self.zoom, self.rotation, true)
     end)
     if ok then
         return tile
@@ -545,7 +545,7 @@ function VirtualPageCanvas:_renderPageSlice(page_info, zoom, slice_top_px, slice
     }
 
     local ok, slice = pcall(function()
-        return self.document:renderPage(page_num, rect, image_zoom, self.rotation)
+        return self.document:renderPage(page_num, rect, image_zoom, self.rotation, false)
     end)
 
     if ok and slice then
@@ -572,7 +572,7 @@ function VirtualPageCanvas:paintScroll(target, x, y, retry)
 
     local visible_pages = {}
     local ok, err = pcall(function()
-        visible_pages = self.document:getVisiblePagesAtOffset(scroll_offset, viewport_h, zoom, self.rotation)
+        visible_pages = self.document:getVisiblePagesAtOffset(scroll_offset, viewport_h, zoom, self.rotation, self.zoom_mode, viewport_w)
     end)
     if not ok then
         logger.warn("VPC:paintScroll getVisiblePagesAtOffset failed:", err)
@@ -584,7 +584,7 @@ function VirtualPageCanvas:paintScroll(target, x, y, retry)
     end
 
 
-    local stacked_y = 0
+    local stacked_y = self.padding
 
     if self.document and (self.document._virtual_layout_dirty or not self.document.virtual_layout) then
         self._layout_dirty = true
@@ -618,26 +618,40 @@ function VirtualPageCanvas:paintScroll(target, x, y, retry)
         local top_px = math.floor((page_info.visible_top - page_info.page_top) + 0.5)
 
         local layout = page_info.layout
-        local scaled_w = math.floor((layout.rotated_width or layout.native_width) * zoom + 0.5)
+
+        -- Use the per-page zoom calculated by getVisiblePagesAtOffset
+        -- In fit-width mode, this will be per-page; otherwise it's the global zoom
+        local page_zoom = page_info.zoom or zoom
+
+        -- Calculate rendered width
+        local scaled_w = math.floor((layout.rotated_width or layout.native_width) * page_zoom + 0.5)
+
         local horizontal_spacing = self.padding + (self.horizontal_margin or 0)
         local dest_x = x + horizontal_spacing + math.floor((viewport_w - scaled_w) / 2)
-        local dest_y = y + self.padding + stacked_y
+        local dest_y = y + stacked_y
+
+        -- Convert to native coordinates with rounding
+        local native_y = math.floor(top_px / page_zoom + 0.5)
+        local native_h = math.floor(slice_h_px / page_zoom + 0.5)
 
         local rect = Geom:new{
             x = 0,
-            y = top_px / zoom,
+            y = native_y,
             w = layout.native_width,
-            h = slice_h_px / zoom,
+            h = native_h,
         }
 
         local ok_draw = pcall(function()
-            return self.document:drawPageTiled(target, dest_x, dest_y, rect, page_info.page_num, zoom, self.rotation, nil, 1, false)
+            return self.document:drawPageTiled(target, dest_x, dest_y, rect, page_info.page_num, page_zoom, self.rotation, nil, 1, false)
         end)
         if not ok_draw then
             logger.warn("VPC:paintScroll tiled slice render failed", "page", page_info.page_num)
         end
 
-        stacked_y = stacked_y + slice_h_px
+        -- Calculate actual rendered height to ensure stacking aligns with rendered content
+        local actual_rendered_h = math.floor(native_h * page_zoom + 0.5)
+
+        stacked_y = stacked_y + actual_rendered_h
         prev_page = page_info.page_num
 
         ::continue::

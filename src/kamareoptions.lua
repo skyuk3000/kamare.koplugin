@@ -60,6 +60,16 @@ local KamareOptions = {
                     precision = "%.1f",
                 },
             },
+            {
+                name = "background_color",
+                name_text = _("Background Color"),
+                toggle = {_("Black"), _("White")},
+                values = {0, 1},
+                args = {0, 1},
+                default_value = 1,
+                event = "SetBackgroundColor",
+                help_text = _([[Choose the background color for the image viewer.]]),
+            }
         }
     },
     {
@@ -73,7 +83,10 @@ local KamareOptions = {
                 default_value = 0,
                 event = "DefineZoom",
                 args = {0,1,2},
-                help_text = _([[Set how the page should be resized to fit the screen.]]),
+                help_text = _([[Set how the page should be resized to fit the screen. In continuous mode, only 'width' is available for consistent page alignment.]]),
+                enabled_func = function(configurable)
+                    return optionsutil.enableIfEquals(configurable, "scroll_mode", 0)
+                end,
             },
             {
                 name = "scroll_margin",
@@ -124,12 +137,22 @@ local KamareOptions = {
             {
                 name = "prefetch_pages",
                 name_text = _("Prefetch Pages"),
-                toggle = {_("Off"), _("1"), _("2"), _("3")},
-                values = {0, 1, 2, 3},
+                toggle = {_("Off"), _("1"), _("2"), _("3"), _("Auto")},
+                values = {0, 1, 2, 3, -1},
                 default_value = 1,
                 event = "SetPrefetchPages",
-                args = {0, 1, 2, 3},
-                help_text = _([[Set how many pages to prefetch when reading.]]),
+                args = {0, 1, 2, 3, -1},
+                help_text = _([[Set how many pages to prefetch when reading. Auto dynamically adjusts (0-5 pages) based on available cache space and average page size.]]),
+            },
+            {
+                name = "render_quality",
+                name_text = _("Render Quality"),
+                toggle = {_("Low"), _("High"), _("Native")},
+                values = {0.8, 1.2, -1},
+                default_value = -1,
+                event = "SetRenderQuality",
+                args = {0.8, 1.2, -1},
+                help_text = _([[Controls internal rendering resolution. Low/High cap rendering based on screen size to save memory on large images. Native always uses full image resolution. Images smaller than threshold are never upscaled.]]),
             },
             {
                 name = "footer_mode",
