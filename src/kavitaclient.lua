@@ -264,7 +264,19 @@ function KavitaClient:getStreamSeries(name, params)
 
     -- Default FilterV2Dto to include only manga (filter out non-manga)
     -- Caller may override by passing params.filter (a full FilterV2Dto table)
-    local default_filter_v2 = { statements = { { comparison = 0, field = 21, value = "1" } } }
+    local default_filter_v2 = {
+        id = 0,
+        name = nil,
+        statements = {
+            { comparison = 0, field = 21, value = "1" }  -- Format = Archive (manga)
+        },
+        combination = 1,  -- AND
+        limitTo = 0,
+        sortOptions = {
+            isAscending = false,
+            sortField = 4,  -- Recently updated sort
+        },
+    }
     local filter_v2 = (type(params) == "table" and params.filter) or default_filter_v2
 
     if name == "on-deck" then
@@ -273,7 +285,7 @@ function KavitaClient:getStreamSeries(name, params)
         body = filter_v2
     elseif name == "recently-updated" or name == "recently-updated-series" then
         method = "POST"
-        path = "/api/Series/recently-updated-series"
+        path = "/api/Series/all-v2"
         body = filter_v2
     elseif name == "newly-added" or name == "recently-added" or name == "recently-added-v2" then
         method = "POST"
@@ -284,6 +296,8 @@ function KavitaClient:getStreamSeries(name, params)
         path = "/api/want-to-read/v2"
         -- Build FilterV2Dto with want-to-read filter
         local want_to_read_filter = {
+            id = 0,
+            name = nil,
             statements = {
                 { comparison = 0, field = 21, value = "1" },  -- Format = Archive (manga)
                 { comparison = 0, field = 26, value = "true" }, -- Want to Read = true
@@ -314,6 +328,7 @@ function KavitaClient:getStreamSeries(name, params)
         query  = query,
         body   = body,
     }, 120, "kavita|stream")
+
     return data, code, headers, status, body_str
 end
 
