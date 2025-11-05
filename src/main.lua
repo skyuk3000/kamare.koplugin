@@ -1,6 +1,7 @@
 local DataStorage = require("datastorage")
 local Dispatcher = require("dispatcher")
 local KavitaBrowser = require("kavitabrowser")
+local logger = require("logger")
 local LuaSettings = require("luasettings")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
@@ -10,11 +11,15 @@ local Kamare = WidgetContainer:extend{
     name = "kamare",
     kamare_settings_file = DataStorage:getSettingsDir() .. "/kamare.lua",
     servers = nil,
+    -- CoverBrowser integration
+    has_coverbrowser = false,
+    BookInfoManager = nil,
+    CoverMenu = nil,
+    ListMenu = nil,
+    MosaicMenu = nil,
 }
 
 function Kamare:init()
-    local logger = require("logger")
-
     self.kamare_settings = LuaSettings:open(self.kamare_settings_file)
 
     if next(self.kamare_settings.data) == nil then
@@ -23,9 +28,63 @@ function Kamare:init()
     end
     self.servers = self.kamare_settings:readSetting("servers", {})
 
+    -- Try to load CoverBrowser modules
+    self:loadCoverBrowserModules()
+
+    -- Install BookInfoManager hook for Kavita metadata caching
+    if self.has_coverbrowser then
+        local BookInfoManagerHook = require("bookinfomanagerhook")
+        BookInfoManagerHook:install(self)
+    end
+
     -- Footer mode will be loaded by KamareImageViewer instances as needed
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
+end
+
+function Kamare:loadCoverBrowserModules()
+    -- Try loading BookInfoManager
+    local ok, module = pcall(require, "bookinfomanager")
+    if ok then
+        self.BookInfoManager = module
+    else
+        logger.warn("Kamare: Failed to load bookinfomanager:", module)
+    end
+
+    -- Try loading CoverMenu
+    ok, module = pcall(require, "covermenu")
+    if ok then
+        self.CoverMenu = module
+    else
+        logger.warn("Kamare: Failed to load covermenu:", module)
+    end
+
+    -- Try loading ListMenu
+    ok, module = pcall(require, "listmenu")
+    if ok then
+        self.ListMenu = module
+    else
+        logger.warn("Kamare: Failed to load listmenu:", module)
+    end
+
+    -- Try loading MosaicMenu
+    ok, module = pcall(require, "mosaicmenu")
+    if ok then
+        self.MosaicMenu = module
+    else
+        logger.warn("Kamare: Failed to load mosaicmenu:", module)
+    end
+
+    -- Check if all modules loaded successfully
+    if self.BookInfoManager and self.CoverMenu and self.ListMenu and self.MosaicMenu then
+        self.has_coverbrowser = true
+    else
+        logger.warn("Kamare: CoverBrowser integration disabled - missing modules:",
+                    "BookInfoManager=", self.BookInfoManager ~= nil,
+                    "CoverMenu=", self.CoverMenu ~= nil,
+                    "ListMenu=", self.ListMenu ~= nil,
+                    "MosaicMenu=", self.MosaicMenu ~= nil)
+    end
 end
 
 function Kamare:onDispatcherRegisterActions()
@@ -53,6 +112,12 @@ function Kamare:onShowKavitaBrowser()
         is_borderless = true,
         title_bar_fm_style = true,
         kamare_settings = self.kamare_settings,
+        -- Pass CoverBrowser modules if available
+        has_coverbrowser = self.has_coverbrowser,
+        BookInfoManager = self.BookInfoManager,
+        CoverMenu = self.CoverMenu,
+        ListMenu = self.ListMenu,
+        MosaicMenu = self.MosaicMenu,
         close_callback = function()
             UIManager:close(self.browser)
         end,

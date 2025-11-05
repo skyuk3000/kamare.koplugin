@@ -9,6 +9,7 @@ local KavitaClient = require("kavitaclient")
 local UIManager = require("ui/uimanager")
 local ffiUtil = require("ffi/util")
 local logger = require("logger")
+local KamareImageViewer = require("kamareimageviewer")
 local _ = require("gettext")
 local T = ffiUtil.template
 
@@ -26,6 +27,12 @@ end
 
 local KavitaBrowser = Menu:extend{
     title_shrink_font_to_fit = true,
+    -- CoverBrowser integration (set via new() parameters)
+    has_coverbrowser = false,
+    BookInfoManager = nil,
+    CoverMenu = nil,
+    ListMenu = nil,
+    MosaicMenu = nil,
 }
 
 function KavitaBrowser:init()
@@ -39,7 +46,7 @@ function KavitaBrowser:init()
     -- Check if we have exactly one server and it's the initial browser startup
     if is_initial_browser_startup and self.servers and #self.servers == 1 then
         local single_server = self.servers[1]
-        -- First initialize the Menu normally
+        -- First set up basic properties
         self.item_table = {}
         self.catalog_title = nil
         self.title_bar_left_icon = "appbar.menu"
@@ -47,7 +54,15 @@ function KavitaBrowser:init()
             self:showTitleMenu()
         end
 
-        Menu.init(self) -- Initialize Menu first
+        -- Apply CoverBrowser enhancements if available (BEFORE Menu.init)
+        if self.has_coverbrowser then
+            self:_applyCoverBrowserEnhancements()
+        else
+            logger.warn("Kamare: CoverBrowser not available")
+        end
+
+        -- NOW initialize Menu (after CoverBrowser methods are in place)
+        Menu.init(self)
 
         -- Then load the server's content
         self.current_server_name = single_server.name
@@ -66,6 +81,110 @@ function KavitaBrowser:init()
     end
 
     Menu.init(self)
+
+    -- Apply CoverBrowser enhancements if available
+    if self.has_coverbrowser then
+        self:_applyCoverBrowserEnhancements()
+    else
+        logger.warn("Kamare: CoverBrowser not available")
+    end
+end
+
+function KavitaBrowser:_applyCoverBrowserEnhancements()
+    -- Read display mode from CoverBrowser's global FileManager setting
+    local display_mode = self.BookInfoManager:getSetting("filemanager_display_mode")
+
+    -- Extract display mode type: "mosaic" or "list"
+    local display_mode_type = display_mode and display_mode:gsub("_.*", "") or nil
+
+    -- Only apply CoverBrowser enhancements if not in classic mode
+    if not display_mode or display_mode == "" then
+        logger.warn("Kamare: Classic mode detected, skipping CoverBrowser enhancements")
+        return
+    end
+
+    -- Override methods on this instance (same pattern as CoverBrowser does for History/Collections)
+    -- Wrap updateItems to force recalculation when page_num is wrong
+    local original_updateItems = self.CoverMenu.updateItems
+    self.updateItems = function(self, select_number, no_recalculate_dimen)
+        -- Force recalculation if page_num doesn't match expected value
+        if self.item_table and #self.item_table > 0 and self.perpage and self.perpage > 0 then
+            local expected_page_num = math.ceil(#self.item_table / self.perpage)
+            if self.page_num ~= expected_page_num then
+                no_recalculate_dimen = false
+            end
+        end
+
+        return original_updateItems(self, select_number, no_recalculate_dimen)
+    end
+
+    -- Wrap onCloseWidget to call CoverBrowser's cleanup
+    local original_onCloseWidget = self.CoverMenu.onCloseWidget
+    self.onCloseWidget = function()
+        if original_onCloseWidget then
+            original_onCloseWidget(self)
+        end
+    end
+
+    -- Initialize grid dimensions (same as CoverBrowser.initGrid)
+    self.nb_cols_portrait = self.BookInfoManager:getSetting("nb_cols_portrait") or 3
+    self.nb_rows_portrait = self.BookInfoManager:getSetting("nb_rows_portrait") or 3
+    self.nb_cols_landscape = self.BookInfoManager:getSetting("nb_cols_landscape") or 4
+    self.nb_rows_landscape = self.BookInfoManager:getSetting("nb_rows_landscape") or 2
+    self.files_per_page = self.BookInfoManager:getSetting("files_per_page") or 8
+
+    self.display_mode_type = display_mode_type
+
+    if self.display_mode_type == "mosaic" then
+        -- Replace methods with MosaicMenu versions
+        local original_mosaic_recalculate = self.MosaicMenu._recalculateDimen
+        self._recalculateDimen = function(...)
+            local result = original_mosaic_recalculate(self, ...)
+
+            -- Fix: MosaicMenu calculates page_num = 0 for empty tables, but base Menu returns 1
+            self.page_num = math.max(1, self.page_num or 0)
+
+            return result
+        end
+        self._updateItemsBuildUI = self.MosaicMenu._updateItemsBuildUI
+
+        -- Set MosaicMenu behavior flags
+        self._do_cover_images = display_mode ~= "mosaic_text"
+        self._do_center_partial_rows = true
+
+    elseif self.display_mode_type == "list" then
+        -- Replace methods with ListMenu versions
+        local original_listmenu_recalculate = self.ListMenu._recalculateDimen
+        self._recalculateDimen = function(...)
+            local result = original_listmenu_recalculate(self, ...)
+
+            -- Fix: ListMenu calculates page_num = 0 for empty tables, but base Menu returns 1
+            self.page_num = math.max(1, self.page_num or 0)
+
+            return result
+        end
+        self._updateItemsBuildUI = self.ListMenu._updateItemsBuildUI
+
+        -- Set ListMenu behavior flags
+        self._do_cover_images = display_mode ~= "list_only_meta"
+        self._do_filename_only = display_mode == "list_image_filename"
+    else
+        logger.error("Kamare: Unknown display_mode_type - neither mosaic nor list!")
+        logger.error("Kamare: This will cause crashes - _recalculateDimen not set")
+    end
+
+    -- Disable hint for opened books (we don't track that for Kavita)
+    self._do_hint_opened = false
+
+    -- Set up getBookInfo as a function (not method) that CoverBrowser can call
+    -- CoverBrowser calls menu.getBookInfo(filepath), not menu:getBookInfo(filepath)
+    -- We delegate to BookInfoManager which will trigger the BookInfoManagerHook
+    self.getBookInfo = function(filepath)
+        return self.BookInfoManager:getBookInfo(filepath)
+    end
+
+    -- Mark as CoverBrowser-enhanced
+    self._coverbrowser_overridden = true
 end
 
 function KavitaBrowser:showTitleMenu()
@@ -104,7 +223,7 @@ function KavitaBrowser:showTitleMenu()
 end
 
 -- Build menu entries from the Kavita dashboard array
-local function buildKavitaDashboardItems(dashboard)
+function KavitaBrowser:buildKavitaDashboardItems(dashboard)
     local items = {}
     if type(dashboard) == "table" then
         for _, d in ipairs(dashboard) do
@@ -131,22 +250,40 @@ local function buildKavitaDashboardItems(dashboard)
                 name = _("Unnamed")
             end
 
-            table.insert(items, {
+            local item = {
                 text = name,
                 kavita_dashboard = true,
                 kavita_stream_name = api_name,
                 dashboard = d, -- keep full dto for future navigation
-            })
+            }
+
+            -- Dashboard items are folders/streams, not files
+            -- CoverBrowser needs a path even for directories
+            if self.has_coverbrowser then
+                item.is_file = false  -- Mark as directory
+                -- Provide a dummy directory path
+                item.path = string.format("/kavita/%s/stream/%s/",
+                    self.current_server_name or "unknown", api_name)
+            end
+
+            table.insert(items, item)
         end
     end
 
     -- Manually add "Want to Read" after the dashboard items
-    table.insert(items, {
+    local item = {
         text = "Want to Read",
         kavita_dashboard = true,
         kavita_stream_name = "want-to-read",
         dashboard = { name = "want-to-read" },
-    })
+    }
+    if self.has_coverbrowser then
+        item.is_file = false  -- Mark as directory
+        -- Provide a dummy directory path
+        item.path = string.format("/kavita/%s/stream/want-to-read/",
+            self.current_server_name or "unknown")
+    end
+    table.insert(items, item)
 
     return items
 end
@@ -166,7 +303,7 @@ function KavitaBrowser:showDashboardAfterSelection(server_name)
         return
     end
 
-    local items = buildKavitaDashboardItems(data)
+    local items = self:buildKavitaDashboardItems(data)
     self.catalog_title = server_name
     self.search_url = nil
 
@@ -253,43 +390,36 @@ end
 function KavitaBrowser:buildKavitaSeriesItems(series_list)
     local items = {}
     if type(series_list) == "table" then
-        for _, s in ipairs(series_list) do
+        for i, s in ipairs(series_list) do
             local name = s.localizedName or s.name or s.originalName or s.seriesName or s.title or _("Unnamed series")
-            local subtitle = s.libraryName or (s.library and s.library.name)
-            table.insert(items, {
+            -- Note: SeriesDto doesn't include author/writer info. That's only available
+            -- in SeriesDetailDto via chapters. To avoid showing library name as "author",
+            -- we leave it empty for series lists.
+            local mandatory = progress_icon(s.pagesRead, s.pages)
+            local item = {
                 text = name,
-                author = subtitle,
+                author = "",  -- Empty - SeriesDto doesn't have author fields
+                mandatory = self.has_coverbrowser and nil or (mandatory or ""),
                 kavita_series = true,
                 series = s, -- keep full dto for next steps
-            })
-        end
-    end
-    return items
-end
+            }
 
--- Build menu entries from a list of RecentlyAddedItemDto (used by Recently Updated)
-local function buildKavitaRecentlyAddedItems(list)
-    local items = {}
-    if type(list) == "table" then
-        for _, v in ipairs(list) do
-            local name = v.seriesName or v.title or _("Recently updated item")
-            local subtitle_parts = {}
-            if v.title and v.title ~= "" then table.insert(subtitle_parts, v.title) end
-            if v.created and v.created ~= "" then table.insert(subtitle_parts, v.created) end
-            local subtitle = #subtitle_parts > 0 and table.concat(subtitle_parts, " • ") or nil
-            table.insert(items, {
-                text = name,
-                author = subtitle,
-                kavita_recently_added = true,
-                recent = v, -- keep full dto (seriesId, title, created, etc.)
-            })
+            -- Add virtual filepath (always set to prevent CoverBrowser crashes)
+            if s.id then
+                item.file = string.format("/kavita/%s/series/%d.kavita",
+                                         self.current_server_name or "unknown",
+                                         s.id)
+                item.is_file = true
+            end
+
+            table.insert(items, item)
         end
     end
     return items
 end
 
 -- Build menu entries for VolumeDto[]
-local function buildKavitaVolumeItems(volumes)
+function KavitaBrowser:buildKavitaVolumeItems(volumes)
     local items = {}
     if type(volumes) == "table" then
         for _, v in ipairs(volumes) do
@@ -309,20 +439,30 @@ local function buildKavitaVolumeItems(volumes)
             local total = v.pages
             local subtitle = (total and read) and (tostring(read) .. "/" .. tostring(total) .. " pages") or nil
             local mandatory = progress_icon(read, total)
-            table.insert(items, {
+            local item = {
                 text = name,
                 author = subtitle,
-                mandatory = mandatory,
+                mandatory = self.has_coverbrowser and nil or mandatory,
                 kavita_volume = true,
                 volume = v,
-            })
+            }
+
+            -- Add virtual filepath (always set to prevent CoverBrowser crashes)
+            if v.id then
+                item.file = string.format("/kavita/%s/volume/%d.kavita",
+                                         self.current_server_name or "unknown",
+                                         v.id)
+                item.is_file = true
+            end
+
+            table.insert(items, item)
         end
     end
     return items
 end
 
 -- Build menu entries for ChapterDto[]
-local function buildKavitaChapterItems(chapters, kind)
+function KavitaBrowser:buildKavitaChapterItems(chapters, kind)
     local items = {}
     if type(chapters) == "table" then
         for i, c in ipairs(chapters) do
@@ -349,17 +489,42 @@ local function buildKavitaChapterItems(chapters, kind)
 
             local mandatory = progress_icon(read, total)
 
-            table.insert(items, {
+            local item = {
                 text = name,
                 author = subtitle,
-                mandatory = mandatory,
+                mandatory = self.has_coverbrowser and nil or mandatory,
                 kavita_chapter = true,
                 chapter = c,
                 is_special = (kind == "special") or nil,
-            })
+            }
+
+            -- Add virtual filepath (always set to prevent CoverBrowser crashes)
+            if c.id then
+                item.file = string.format("/kavita/%s/chapter/%d.kavita",
+                                         self.current_server_name or "unknown",
+                                         c.id)
+                item.is_file = true
+            end
+
+            table.insert(items, item)
         end
     end
     return items
+end
+
+-- Parse virtual filepath to extract item type and ID
+-- Returns: item_type ("series"|"volume"|"chapter"), item_id (number)
+function KavitaBrowser:_parseVirtualPath(filepath)
+    if not filepath then return nil, nil end
+
+    -- Format: "/kavita/{server}/{type}/{id}.kavita"
+    local item_type, item_id = filepath:match("/kavita/[^/]+/([^/]+)/(%d+)%.kavita")
+
+    if item_type and item_id then
+        return item_type, tonumber(item_id)
+    end
+
+    return nil, nil
 end
 
 -- Fetch SeriesDetail and display Volumes, then Chapters, then Specials
@@ -388,9 +553,9 @@ function KavitaBrowser:showSeriesDetail(series_name, series_id, library_id, opts
     end
 
     local items = {}
-    for _, it in ipairs(buildKavitaVolumeItems(detail.volumes or {})) do table.insert(items, it) end
-    for _, it in ipairs(buildKavitaChapterItems(detail.chapters or {}, "chapter")) do table.insert(items, it) end
-    for _, it in ipairs(buildKavitaChapterItems(detail.specials or {}, "special")) do table.insert(items, it) end
+    for _, it in ipairs(self:buildKavitaVolumeItems(detail.volumes or {})) do table.insert(items, it) end
+    for _, it in ipairs(self:buildKavitaChapterItems(detail.chapters or {}, "chapter")) do table.insert(items, it) end
+    for _, it in ipairs(self:buildKavitaChapterItems(detail.specials or {}, "special")) do table.insert(items, it) end
 
     self.catalog_title = series_name or _("Series")
     self.search_url = nil
@@ -507,34 +672,6 @@ function KavitaBrowser:showKavitaStream(stream_name)
     UIManager:close(loading)
 
     local data = all_data
-
-    -- Special handling: Recently Updated returns RecentlyAddedItemDto[]
-    if stream_name == "recently-updated" or stream_name == "recently-updated-series" then
-        local items = buildKavitaRecentlyAddedItems(data or {})
-
-        self.catalog_title = _("Recently Updated")
-        self.search_url = nil
-
-        -- Remember current stream for back navigation from series detail
-        self.current_stream_name = stream_name
-
-        -- Push a stream sentinel so back returns to dashboard
-        self.paths = self.paths or {}
-        local top = self.paths[#self.paths]
-        if not (top and top.kavita_stream_root == stream_name) then
-            table.insert(self.paths, { kavita_stream_root = stream_name, title = self.catalog_title })
-        end
-
-        if not items or #items == 0 then
-            UIManager:show(InfoMessage:new{ text = _("No items found") })
-        end
-        self:switchItemTable(self.catalog_title, items, nil, nil, nil)
-        self:setTitleBarLeftIcon("appbar.menu")
-        self.onLeftButtonTap = function()
-            self:showTitleMenu()
-        end
-        return
-    end
 
     -- Normalize response to a flat array of SeriesDto
     local series_list = data
@@ -921,7 +1058,6 @@ function KavitaBrowser:launchKavitaChapterViewer(chapter, series_name)
         end
     end
 
-    local KamareImageViewer = require("kamareimageviewer")
     local viewer = KamareImageViewer:new{
         ui = self.ui,
         images_list_data = images_list_data,

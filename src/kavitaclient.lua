@@ -264,6 +264,7 @@ function KavitaClient:getStreamSeries(name, params)
 
     -- Default FilterV2Dto to include only manga (filter out non-manga)
     -- Caller may override by passing params.filter (a full FilterV2Dto table)
+    -- Match the Angular frontend filter structure
     local default_filter_v2 = {
         id = 0,
         name = nil,
@@ -520,8 +521,6 @@ end
 -- Fetch series cover image: GET /api/Image/series-cover?seriesId={id}&apiKey={key}
 -- Returns: raw image data (binary), code, headers, status
 function KavitaClient:getSeriesCover(seriesId)
-    logger.dbg("KavitaClient:getSeriesCover called for seriesId:", seriesId)
-
     if not seriesId then
         logger.warn("KavitaClient:getSeriesCover: seriesId is required")
         return nil, -1, nil, "seriesId required"
@@ -531,10 +530,7 @@ function KavitaClient:getSeriesCover(seriesId)
         return nil, -1, nil, "api_key required"
     end
 
-    local path = "/api/Image/series-cover"
-    logger.dbg("KavitaClient:getSeriesCover: requesting", path, "with seriesId:", seriesId)
-
-    local code, headers, status, body = self:apiRequest(path, {
+    local code, headers, status, body = self:apiRequest("/api/Image/series-cover", {
         method = "GET",
         query  = {
             seriesId = seriesId,
@@ -542,19 +538,92 @@ function KavitaClient:getSeriesCover(seriesId)
         },
     })
 
-    logger.dbg("KavitaClient:getSeriesCover: received response code:", code, "status:", status,
-              "body size:", body and #body or 0)
-
-    -- Return raw binary data for image
     if type(code) == "number" and code >= 200 and code < 300 then
-        logger.info("KavitaClient:getSeriesCover: successfully fetched cover for series", seriesId,
-                   "size:", body and #body or 0, "bytes")
         return body, code, headers, status
     else
         logger.warn("KavitaClient:getSeriesCover: failed to fetch cover for series", seriesId,
                    "code:", code, "status:", status)
         return nil, code, headers, status
     end
+end
+
+-- Fetch volume cover image: GET /api/Image/volume-cover?volumeId={id}&apiKey={key}
+-- Returns: raw image data (binary), code, headers, status
+function KavitaClient:getVolumeCover(volumeId)
+    if not volumeId then
+        logger.warn("KavitaClient:getVolumeCover: volumeId is required")
+        return nil, -1, nil, "volumeId required"
+    end
+    if not self.api_key then
+        logger.warn("KavitaClient:getVolumeCover: api_key not set")
+        return nil, -1, nil, "api_key required"
+    end
+
+    local code, headers, status, body = self:apiRequest("/api/Image/volume-cover", {
+        method = "GET",
+        query  = {
+            volumeId = volumeId,
+            apiKey = self.api_key,
+        },
+    })
+
+    if type(code) == "number" and code >= 200 and code < 300 then
+        return body, code, headers, status
+    else
+        logger.warn("KavitaClient:getVolumeCover: failed to fetch cover for volume", volumeId,
+                   "code:", code, "status:", status)
+        return nil, code, headers, status
+    end
+end
+
+-- Fetch chapter cover image: GET /api/Image/chapter-cover?chapterId={id}&apiKey={key}
+-- Returns: raw image data (binary), code, headers, status
+function KavitaClient:getChapterCover(chapterId)
+    if not chapterId then
+        logger.warn("KavitaClient:getChapterCover: chapterId is required")
+        return nil, -1, nil, "chapterId required"
+    end
+    if not self.api_key then
+        logger.warn("KavitaClient:getChapterCover: api_key not set")
+        return nil, -1, nil, "api_key required"
+    end
+
+    local code, headers, status, body = self:apiRequest("/api/Image/chapter-cover", {
+        method = "GET",
+        query  = {
+            chapterId = chapterId,
+            apiKey = self.api_key,
+        },
+    })
+
+    if type(code) == "number" and code >= 200 and code < 300 then
+        return body, code, headers, status
+    else
+        logger.warn("KavitaClient:getChapterCover: failed to fetch cover for chapter", chapterId,
+                   "code:", code, "status:", status)
+        return nil, code, headers, status
+    end
+end
+
+-- Fetch series metadata: GET /api/Series/metadata?seriesId={id}
+-- Returns: SeriesMetadataDto with summary, language, writers, genres, tags, etc.
+function KavitaClient:getSeriesMetadata(seriesId)
+    if not seriesId then
+        logger.warn("KavitaClient:getSeriesMetadata: seriesId is required")
+        return nil, nil, nil, "seriesId required", nil
+    end
+
+    local data, code, headers, status, body = self:apiJSONCached("/api/Series/metadata", {
+        method = "GET",
+        query  = { seriesId = seriesId },
+    }, 600, "kavita|metadata")
+
+    if not data then
+        logger.warn("KavitaClient:getSeriesMetadata: failed to fetch metadata for series", seriesId,
+                   "code:", code, "status:", status)
+    end
+
+    return data, code, headers, status, body
 end
 
 return KavitaClient
