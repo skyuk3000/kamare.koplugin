@@ -69,6 +69,16 @@ local KamareOptions = {
                 default_value = 1,
                 event = "SetBackgroundColor",
                 help_text = _([[Choose the background color for the image viewer.]]),
+            },
+            {
+                name = "rotation_lock",
+                name_text = _("Rotation Lock"),
+                toggle = {_("Auto"), _("Locked")},
+                values = {false, true},
+                default_value = false,
+                event = "SetRotationLock",
+                args = {false, true},
+                help_text = _([[Auto rotation adjusts screen orientation automatically. Locked keeps the current system rotation fixed.]]),
             }
         }
     },

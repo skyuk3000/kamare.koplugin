@@ -385,6 +385,7 @@ function KamareImageViewer:loadSettings()
     self.configurable.page_padding = self.page_padding
     self.configurable.render_quality = self.render_quality or -1
     self.configurable.background_color = self.background_color
+    self.configurable.rotation_lock = false
 
     self.configurable:loadSettings(settings, self.options.prefix .. "_")
 
@@ -398,6 +399,7 @@ function KamareImageViewer:loadSettings()
     self.page_padding = self.configurable.page_padding or 0
     self.render_quality = self.configurable.render_quality or -1
     self.background_color = self.configurable.background_color or 1
+    self.rotation_locked = self.configurable.rotation_lock or false
 
     self.configurable.footer_mode = self.footer_settings.mode
     self.configurable.prefetch_pages = self.prefetch_pages
@@ -408,6 +410,7 @@ function KamareImageViewer:loadSettings()
     self.configurable.scroll_margin = self.scroll_margin
     self.configurable.page_padding = self.page_padding
     self.configurable.background_color = self.background_color
+    self.configurable.rotation_lock = self.rotation_locked
 
     self:syncAndSaveSettings()
 end
@@ -423,6 +426,7 @@ function KamareImageViewer:syncAndSaveSettings()
     self.configurable.page_padding = self.page_padding
     self.configurable.render_quality = self.render_quality
     self.configurable.background_color = self.background_color
+    self.configurable.rotation_lock = self.rotation_locked
 
     self:saveSettings()
 end
@@ -442,6 +446,7 @@ function KamareImageViewer:saveSettings()
     self.configurable.scroll_margin = self.configurable.scroll_margin or self.scroll_margin
     self.configurable.page_padding = self.configurable.page_padding or self.page_padding
     self.configurable.background_color = self.configurable.background_color or self.background_color
+    self.configurable.rotation_lock = self.configurable.rotation_lock or false
 
     self.configurable:saveSettings(self.kamare_settings, self.options.prefix .. "_")
 end
@@ -748,6 +753,7 @@ function KamareImageViewer:onShowConfigMenu()
     self.configurable.scroll_margin = self.scroll_margin
     self.configurable.page_padding = self.page_padding
     self.configurable.background_color = self.background_color
+    self.configurable.rotation_lock = self.rotation_locked
 
     self.config_dialog = ConfigDialog:new{
         document = nil,
@@ -1814,7 +1820,26 @@ function KamareImageViewer:toggleTitleBar()
     self:update()
 end
 
+function KamareImageViewer:onSetRotationLock(locked)
+    self.rotation_locked = locked
+    self.configurable.rotation_lock = locked
+    self:syncAndSaveSettings()
+
+    if locked then
+        logger.info("KamareImageViewer: Rotation locked at mode", Screen:getRotationMode())
+    else
+        logger.info("KamareImageViewer: Rotation unlocked")
+    end
+    return true
+end
+
 function KamareImageViewer:onSetRotationMode(mode)
+    -- If rotation is locked, ignore rotation change events
+    if self.rotation_locked then
+        logger.info("KamareImageViewer: Rotation locked, ignoring rotation mode change")
+        return true  -- consume the event
+    end
+
     local old_mode = Screen:getRotationMode()
     if mode ~= nil and mode ~= old_mode then
         logger.info("KamareImageViewer: Rotation mode changed from", old_mode, "to", mode)
