@@ -63,7 +63,7 @@ local MODE_INDEX = {
 local KamareFooter = {}
 KamareFooter.__index = KamareFooter
 
-function KamareFooter:new(opts)
+function KamareFooter.new(_, opts)
     local self = setmetatable({}, KamareFooter)
     self.settings = assert(opts.settings, "KamareFooter requires settings")
     self.MODE = MODE
@@ -86,7 +86,7 @@ function KamareFooter:ensureBuilt()
     }
 
     self.progress_bar = ProgressWidget:new{
-        width = Screen:getWidth() - 2 * Screen:scaleBySize(self.settings.progress_margin_width),
+        width = Screen:getWidth() - 2 * self.settings.progress_margin_width,
         height = self.settings.progress_style_thick_height,
         percentage = 0,
         tick_width = 0,
@@ -96,8 +96,8 @@ function KamareFooter:ensureBuilt()
     }
     self.progress_bar:updateStyle(true, self.settings.progress_style_thick_height)
 
-    self.footer_left_margin_span = HorizontalSpan:new{ width = Screen:scaleBySize(self.settings.progress_margin_width) }
-    self.footer_right_margin_span = HorizontalSpan:new{ width = Screen:scaleBySize(self.settings.progress_margin_width) }
+    self.footer_left_margin_span = HorizontalSpan:new{ width = self.settings.progress_margin_width }
+    self.footer_right_margin_span = HorizontalSpan:new{ width = self.settings.progress_margin_width }
 
     self.footer_text_container = CenterContainer:new{
         dimen = Geom:new{ w = 0, h = self.settings.height },
@@ -264,7 +264,7 @@ function KamareFooter:updateContent()
     local text = self.genFooterText()
     self.footer_text:setText(text)
 
-    local margins_width = 2 * Screen:scaleBySize(self.settings.progress_margin_width)
+    local margins_width = 2 * self.settings.progress_margin_width
     local min_progress_width = math.floor(Screen:getWidth() * 0.20)
     local text_available = Screen:getWidth() - margins_width - min_progress_width
 
@@ -281,8 +281,8 @@ function KamareFooter:updateContent()
         self.progress_bar.width = math.max(min_progress_width, Screen:getWidth() - margins_width - text_container_width)
     end
 
-    self.footer_left_margin_span.width = Screen:scaleBySize(self.settings.progress_margin_width)
-    self.footer_right_margin_span.width = Screen:scaleBySize(self.settings.progress_margin_width)
+    self.footer_left_margin_span.width = self.settings.progress_margin_width
+    self.footer_right_margin_span.width = self.settings.progress_margin_width
 
     self.footer_horizontal_group:resetLayout()
 end

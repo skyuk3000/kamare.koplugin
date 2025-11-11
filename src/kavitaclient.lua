@@ -250,7 +250,7 @@ function KavitaClient:getStreamSeries(name, params)
         return nil, nil, nil, "name required", nil
     end
 
-    local method = "GET"
+    local method
     local path
     local body
     local query = {}
@@ -393,7 +393,7 @@ function KavitaClient:createReaderPageTable(chapter_id, ctx)
             query.apiKey = self.api_key
         end
 
-        local code, _, status, body_str = self:apiRequest("/api/Reader/image", {
+        local code, _, _, body_str = self:apiRequest("/api/Reader/image", {
             method  = "GET",
             query   = query,
             headers = { ["Accept"] = "*/*" },

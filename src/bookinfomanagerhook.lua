@@ -323,7 +323,7 @@ local function hooked_extractBookInfo(self, filepath, cover_specs)
     -- Check if this is a Kavita path
     if isKavitaPath(filepath) then
         -- Parse the virtual path
-        local server_name, item_type, item_id = parseKavitaPath(filepath)
+        local _, item_type, item_id = parseKavitaPath(filepath)
 
         -- Fetch metadata from Kavita API (with fallback to item_table)
         local metadata = fetchKavitaMetadata(filepath, self)
