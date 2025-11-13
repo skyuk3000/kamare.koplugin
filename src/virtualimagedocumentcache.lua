@@ -50,8 +50,6 @@ function VIDCache:init()
             end
         end,
     }
-
-    logger.dbg("VirtualImageDocument cache singleton initialized (scaled cache disabled)")
 end
 
 function VIDCache:getNativeTile(hash)

@@ -42,7 +42,11 @@ local VirtualImageDocument = Document:extend{
     _dims_cache = nil,
     _orientation_cache = nil,
 
-    tile_px = TILE_SIZE_PX, -- default tile size in page coords (px)
+    _dual_page_offset = nil,
+    _dual_page_layout = nil, -- Pre-calculated layout: [page_num] = {left, right}
+    content_type = "auto", -- "auto", "volume", or "chapter"
+
+    tile_px = TILE_SIZE_PX, -- default tile size (px)
 }
 
 local function isPositiveDimension(w, h)
@@ -123,7 +127,6 @@ function VirtualImageDocument:init()
     self:updateColorRendering()
 
     if self._pages > 0 then
-        logger.dbg("VirtualImageDocument: Auto-caching first page tiles")
         self:_preSplitPageTiles(1, 1.0, 0, nil, true)
     end
 end
@@ -168,7 +171,7 @@ function VirtualImageDocument:_storeDims(pageno, w, h)
         end
     end
     self._dims_cache[pageno] = Geom:new{ w = w, h = h }
-    self._orientation_cache[pageno] = (w > h) and 1 or 0  -- 0: portrait, 1: landscape
+    self._orientation_cache[pageno] = (w > h) and 1 or 0
 end
 
 function VirtualImageDocument:_ensureVirtualLayout(rotation)
@@ -251,7 +254,6 @@ function VirtualImageDocument:_calculateRenderDimensions(native_dims, cap_height
         local screen_size = Screen:getSize()
         local cap_w = math.floor(screen_size.w * self.render_quality)
 
-        -- Height capping disabled for continuous scroll mode
         if cap_height then
             local cap_h = math.floor(screen_size.h * self.render_quality)
             if native_dims.w > cap_w or native_dims.h > cap_h then
@@ -322,6 +324,139 @@ end
 
 function VirtualImageDocument:getPageOrientation(pageno)
     return (self._orientation_cache and self._orientation_cache[pageno]) or 0
+end
+
+function VirtualImageDocument:getDualPageOffset()
+    if self._dual_page_offset ~= nil then
+        return self._dual_page_offset
+    end
+
+    local content_type = self.content_type or "auto"
+
+    if content_type == "chapter" then
+        self._dual_page_offset = 0
+        return 0
+    end
+
+    -- Scan first ~30 pages for landscape spreads
+    -- Spreads at even positions need no offset, odd positions need offset=1
+    local scan_limit = math.min(self._pages, 30)
+
+    for page = 2, scan_limit do
+        if self:getPageOrientation(page) == 1 then
+            if (page % 2) == 0 then
+                self._dual_page_offset = 0
+                return 0
+            else
+                self._dual_page_offset = 1
+                return 1
+            end
+        end
+    end
+
+    self._dual_page_offset = 0
+    return 0
+end
+
+function VirtualImageDocument:_buildDualPageLayout(page_direction)
+    -- Pre-calculate layout: layout[page] = {left, right}, 0=empty, {p,p}=landscape solo
+
+    if self._dual_page_layout then
+        return self._dual_page_layout
+    end
+
+    local content_type = self.content_type or "auto"
+
+    local layout = {}
+    local offset = self:getDualPageOffset()
+    local page_count = self._pages
+
+    local function is_landscape(page)
+        if page < 1 or page > page_count then return false end
+        return self:getPageOrientation(page) == 1
+    end
+
+    local page = 1
+    local landscape_count = 0
+    local is_chapter = (content_type == "chapter")
+
+    while page <= page_count do
+        if layout[page] then
+            page = page + 1
+        elseif is_landscape(page) then
+            layout[page] = {page, page}
+            landscape_count = landscape_count + 1
+            page = page + 1
+        elseif page == 1 and not is_chapter then
+            if page_direction == 1 then
+                layout[1] = {0, 1}
+            else
+                layout[1] = {1, 0}
+            end
+
+            page = page + 1
+        elseif page == 2 and offset == 1 and not is_chapter then
+            if page_direction == 1 then
+                layout[2] = {2, 0}
+            else
+                layout[2] = {0, 2}
+            end
+
+            page = page + 1
+        else
+            local virtual_page = page
+            if is_chapter then
+                virtual_page = page - 1
+            elseif offset == 1 and page > 1 then
+                virtual_page = page + 1
+            end
+            virtual_page = virtual_page + landscape_count
+
+            local page1, page2
+            local pair_partner = nil
+
+            if virtual_page % 2 == 0 then
+                local next_page = page + 1
+                if next_page <= page_count and not is_landscape(next_page) then
+                    page1, page2 = page, next_page
+                    pair_partner = next_page
+                else
+                    page1, page2 = page, 0
+                end
+            else
+                local prev_page = page - 1
+                if prev_page >= 1 and not is_landscape(prev_page) and layout[prev_page] then
+                    local prev_layout = layout[prev_page]
+                    local is_prev_solo = (prev_layout[1] == prev_layout[2])
+                    if not is_prev_solo then
+                        page = page + 1
+                        goto continue
+                    end
+                end
+                page1, page2 = page, 0
+            end
+
+            local left_page, right_page
+            if page_direction == 1 then
+                left_page, right_page = page2, page1
+            else
+                left_page, right_page = page1, page2
+            end
+
+            layout[page] = {left_page, right_page}
+
+            if pair_partner then
+                layout[pair_partner] = {left_page, right_page}
+            end
+
+            page = page + 1
+        end
+        ::continue::
+    end
+
+    self._dual_page_layout = layout
+
+    return layout
 end
 
 function VirtualImageDocument:preloadDimensions(list)
@@ -543,8 +678,6 @@ function VirtualImageDocument:_computeTileRects(rect, tile_px)
     local rect_x2 = rx + rw
     local rect_y2 = ry + rh
 
-    -- Align to FIXED tile grid (0, tile_px, 2*tile_px, ...)
-    -- This ensures tiles are always at the same coordinates regardless of input rect
     local tile_x_start = math.floor(rect_x1 / tile_px) * tile_px
     local tile_y_start = math.floor(rect_y1 / tile_px) * tile_px
     local tile_x_end = math.ceil(rect_x2 / tile_px) * tile_px
@@ -634,14 +767,11 @@ function VirtualImageDocument:renderPage(pageno, rect, zoom, rotation, page_mode
 
     local native_tile = VIDCache:getNativeTile(hash)
     if native_tile then
-        logger.dbg("VID:renderPage cache HIT", "page", pageno, "rect", (rect and (rect.x..","..rect.y) or "full"))
         return self:_scaleToZoom(native_tile, zoom, rotation, clip_rect)
     end
 
-    logger.dbg("VID:renderPage cache MISS", "page", pageno, "rect", (rect and (rect.x..","..rect.y) or "full"))
     local raw_data = self:_getRawImageData(pageno)
     if not raw_data then
-        logger.warn("VID:renderPage no image data for page", "page", pageno)
         return nil
     end
 
@@ -653,7 +783,6 @@ function VirtualImageDocument:renderPage(pageno, rect, zoom, rotation, page_mode
         logger.warn("VID:renderPage renderImage failed", "page", pageno, "error", full_bb)
         return nil
     end
-    logger.dbg("VID:renderPage DECODE", "page", pageno, "size", render_w.."x"..render_h)
 
     local render_scale_x = render_w / native_dims.w
     local render_scale_y = render_h / native_dims.h
@@ -665,7 +794,6 @@ function VirtualImageDocument:renderPage(pageno, rect, zoom, rotation, page_mode
 
     local tile_bb = Blitbuffer.new(scaled_w, scaled_h, self.render_color and Blitbuffer.TYPE_BBRGB32 or Blitbuffer.TYPE_BB8)
     tile_bb:blitFrom(full_bb, 0, 0, scaled_offset_x, scaled_offset_y, scaled_w, scaled_h)
-    logger.dbg("VID:renderPage CROP", "size", scaled_w.."x"..scaled_h)
 
     full_bb:free()
 
@@ -684,8 +812,6 @@ function VirtualImageDocument:renderPage(pageno, rect, zoom, rotation, page_mode
 
     VIDCache:setNativeTile(hash, tile, tile.size)
 
-    logger.dbg("VID:renderPage COMPLETE", "page", pageno)
-
     return self:_scaleToZoom(tile, zoom, rotation, clip_rect)
 end
 
@@ -699,8 +825,6 @@ function VirtualImageDocument:_scaleToZoom(native_tile, zoom, rotation, clip_rec
     local render_scale_x = native_tile.render_scale_x or 1.0
     local render_scale_y = native_tile.render_scale_y or 1.0
 
-    -- Viewport clipping optimization: crop native tile to visible region before scaling
-    -- This significantly reduces pixels to scale for edge tiles (saves ~2-3ms per edge tile)
     if clip_rect and tile_excerpt then
         local rel_x = clip_rect.x - tile_excerpt.x
         local rel_y = clip_rect.y - tile_excerpt.y
@@ -731,9 +855,6 @@ function VirtualImageDocument:_scaleToZoom(native_tile, zoom, rotation, clip_rec
         end
     end
 
-    local input_bb_w = input_bb:getWidth()
-    local input_bb_h = input_bb:getHeight()
-
     if math.abs(zoom - 1.0) < 0.001 and math.abs(render_scale_x - 1.0) < 0.001 and math.abs(render_scale_y - 1.0) < 0.001 then
         return native_tile
     end
@@ -741,12 +862,9 @@ function VirtualImageDocument:_scaleToZoom(native_tile, zoom, rotation, clip_rec
     local native_w = input_bb:getWidth()
     local native_h = input_bb:getHeight()
 
-    -- Account for quality scaling: scale by (zoom / render_scale) for correct final size
     local effective_zoom_x = zoom / render_scale_x
     local effective_zoom_y = zoom / render_scale_y
 
-    -- Use ceil to ensure tiles are always large enough to cover boundary-calculated dimensions
-    -- This prevents 1-pixel gaps from rounding during tiled rendering
     local target_w = math.ceil(native_w * effective_zoom_x)
     local target_h = math.ceil(native_h * effective_zoom_y)
 
@@ -774,11 +892,8 @@ function VirtualImageDocument:_scaleToZoom(native_tile, zoom, rotation, clip_rec
         bb = scaled_bb,
     }
     scaled_tile.size = tonumber(scaled_bb.stride) * scaled_bb.h + 512
-    -- Preserve render_scale from original tile
     scaled_tile.render_scale_x = native_tile.render_scale_x
     scaled_tile.render_scale_y = native_tile.render_scale_y
-
-    logger.dbg("VID:_scaleToZoom SCALED", "from", input_bb_w.."x"..input_bb_h, "to", scaled_bb:getWidth().."x"..scaled_bb:getHeight())
 
     return scaled_tile
 end
@@ -823,8 +938,6 @@ function VirtualImageDocument:_preSplitPageTiles(pageno, zoom, rotation, tile_px
         return
     end
 
-    logger.dbg("VID:_preSplitPageTiles", "page", pageno, "size", native.w.."x"..native.h, "missing_tiles", #missing)
-
     local raw_data = self:_getRawImageData(pageno)
     if not raw_data then return end
 
@@ -836,7 +949,6 @@ function VirtualImageDocument:_preSplitPageTiles(pageno, zoom, rotation, tile_px
         logger.warn("VID:_preSplitPageTiles renderImage failed", "page", pageno, "error", full_bb)
         return
     end
-    logger.dbg("VID:_preSplitPageTiles DECODE", "page", pageno, "size", render_w.."x"..render_h)
 
     local render_scale_x = render_w / native.w
     local render_scale_y = render_h / native.h
@@ -865,7 +977,6 @@ function VirtualImageDocument:_preSplitPageTiles(pageno, zoom, rotation, tile_px
                 bb = tile_bb,
             }
             tile.size = tonumber(tile_bb.stride) * tile_bb.h + 512
-            -- Store render scale for correct zoom scaling later
             tile.render_scale_x = render_scale_x
             tile.render_scale_y = render_scale_y
 
@@ -875,8 +986,6 @@ function VirtualImageDocument:_preSplitPageTiles(pageno, zoom, rotation, tile_px
     end
 
     full_bb:free()
-
-    logger.dbg("VID:_preSplitPageTiles COMPLETE", "page", pageno, "tiles", #missing)
 end
 
 function VirtualImageDocument:drawPageTiled(target, x, y, rect, pageno, zoom, rotation, tile_px, prefetch_rows, page_mode)

@@ -36,14 +36,11 @@ local KavitaBrowser = Menu:extend{
 }
 
 function KavitaBrowser:init()
-    -- Initialize paths table here to avoid nil errors
     self.paths = self.paths or {}
 
-    -- Track if this is the initial startup of this browser instance (not navigation back)
     local is_initial_browser_startup = not self.has_initialized_before
     self.has_initialized_before = true
 
-    -- Check if we have exactly one server and it's the initial browser startup
     if is_initial_browser_startup and self.servers and #self.servers == 1 then
         local single_server = self.servers[1]
         -- First set up basic properties
@@ -1013,7 +1010,7 @@ function KavitaBrowser:handleCatalogError(item_url, error_msg)
 end
 
 -- Launch the Kavita chapter viewer using Reader/image endpoint
-function KavitaBrowser:launchKavitaChapterViewer(chapter, series_name)
+function KavitaBrowser:launchKavitaChapterViewer(chapter, series_name, is_volume)
     if not chapter or not chapter.id then return end
 
     local pages = chapter.pages or (chapter.files and #chapter.files) or 0
@@ -1060,6 +1057,27 @@ function KavitaBrowser:launchKavitaChapterViewer(chapter, series_name)
         or normalize_authors(chapter.writers)
 
     local series_names = self.current_series_names or {}
+
+    local content_type = "auto"
+
+    if is_volume == true then
+        content_type = "volume"
+    elseif is_volume == false then
+        content_type = "chapter"
+    elseif is_volume == nil then
+        -- Auto-detect based on chapter.range
+        -- Kavita uses -100000 as sentinel value for volumes
+        -- Positive numbers indicate chapter numbers
+        if chapter.range then
+            local range = tonumber(chapter.range)
+            if range and range < 0 then
+                content_type = "volume"
+            elseif range and range >= 0 then
+                content_type = "chapter"
+            end
+        end
+    end
+
     local metadata = {
         -- Primary labels
         seriesName    = series_name or series_names.localizedName or series_names.name,
@@ -1080,6 +1098,8 @@ function KavitaBrowser:launchKavitaChapterViewer(chapter, series_name)
 
         -- Reader state
         startPage     = start_page,
+
+        content_type  = content_type,
     }
 
 
@@ -1217,23 +1237,26 @@ end
 function KavitaBrowser:onMenuSelect(item)
     -- Only Kavita items are supported
     if item.kavita_chapter and item.chapter and item.chapter.id then
-        self:launchKavitaChapterViewer(item.chapter, self.catalog_title or self.current_server_name)
+        self:launchKavitaChapterViewer(item.chapter, self.catalog_title or self.current_server_name, false)
         return true
     end
+
     if item.kavita_volume and item.volume and item.volume.id then
         local vol = item.volume
         local ch = (type(vol.chapters) == "table") and vol.chapters[1] or nil
         if ch and ch.id then
-            self:launchKavitaChapterViewer(ch, self.catalog_title or self.current_server_name)
+            self:launchKavitaChapterViewer(ch, self.catalog_title or self.current_server_name, true)
         else
             UIManager:show(InfoMessage:new{ text = _("No chapters in this volume") })
         end
         return true
     end
+
     if item.kavita_recently_added and item.recent and item.recent.seriesId then
         self:showSeriesDetail(item.text, item.recent.seriesId, nil)
         return true
     end
+
     if item.kavita_series and item.series then
         local sid = item.series.id or item.series.seriesId
         local lid = item.series.libraryId or (item.series.library and item.series.library.id)
@@ -1251,6 +1274,7 @@ function KavitaBrowser:onMenuSelect(item)
             return true
         end
     end
+
     if item.kavita_dashboard then
         local stream_name = item.kavita_stream_name or (item.dashboard and item.dashboard.name)
         if not stream_name or stream_name == "" then
@@ -1260,12 +1284,14 @@ function KavitaBrowser:onMenuSelect(item)
         self:showKavitaStream(stream_name)
         return true
     end
+
     if #self.paths == 0 then -- root list
         self.current_server_name    = item.text
         self:authenticateAfterSelection(item.text, item.url)
         self:showDashboardAfterSelection(item.text)
         return true
     end
+
     return true
 end
 
@@ -1359,7 +1385,7 @@ function KavitaBrowser:onMenuHold(item)
                         -- Override start page to 1
                         local original_pages_read = chapter.pagesRead
                         chapter.pagesRead = 0
-                        self:launchKavitaChapterViewer(chapter, self.catalog_title or self.current_server_name)
+                        self:launchKavitaChapterViewer(chapter, self.catalog_title or self.current_server_name, false)
                         chapter.pagesRead = original_pages_read
                     end,
                 },
@@ -1368,7 +1394,7 @@ function KavitaBrowser:onMenuHold(item)
                     callback = function()
                         UIManager:close(dialog)
                         -- Use normal behavior (resume from pagesRead)
-                        self:launchKavitaChapterViewer(chapter, self.catalog_title or self.current_server_name)
+                        self:launchKavitaChapterViewer(chapter, self.catalog_title or self.current_server_name, false)
                     end,
                 },
             },
@@ -1409,7 +1435,7 @@ function KavitaBrowser:onMenuHold(item)
                                             -- Override start page
                                             local original_pages_read = chapter.pagesRead
                                             chapter.pagesRead = page_num - 1
-                                            self:launchKavitaChapterViewer(chapter, self.catalog_title or self.current_server_name)
+                                            self:launchKavitaChapterViewer(chapter, self.catalog_title or self.current_server_name, false)
                                             chapter.pagesRead = original_pages_read
                                         end,
                                     },
@@ -1493,7 +1519,7 @@ function KavitaBrowser:onMenuHold(item)
                         -- Override start page to 1
                         local original_pages_read = ch.pagesRead
                         ch.pagesRead = 0
-                        self:launchKavitaChapterViewer(ch, self.catalog_title or self.current_server_name)
+                        self:launchKavitaChapterViewer(ch, self.catalog_title or self.current_server_name, true)
                         ch.pagesRead = original_pages_read
                     end,
                 },
@@ -1502,7 +1528,7 @@ function KavitaBrowser:onMenuHold(item)
                     callback = function()
                         UIManager:close(dialog)
                         -- Use normal behavior (resume from pagesRead)
-                        self:launchKavitaChapterViewer(ch, self.catalog_title or self.current_server_name)
+                        self:launchKavitaChapterViewer(ch, self.catalog_title or self.current_server_name, true)
                     end,
                 },
             },
@@ -1543,7 +1569,7 @@ function KavitaBrowser:onMenuHold(item)
                                             -- Override start page
                                             local original_pages_read = ch.pagesRead
                                             ch.pagesRead = page_num - 1
-                                            self:launchKavitaChapterViewer(ch, self.catalog_title or self.current_server_name)
+                                            self:launchKavitaChapterViewer(ch, self.catalog_title or self.current_server_name, true)
                                             ch.pagesRead = original_pages_read
                                         end,
                                     },

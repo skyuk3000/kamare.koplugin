@@ -242,9 +242,11 @@ function VirtualPageCanvas:getVirtualHeight()
     if self.view_mode ~= 1 or not self.document then
         return 0
     end
+
     if self._layout_dirty then
         self:recalculateLayout()
     end
+
     return self._virtual_height or 0
 end
 
@@ -252,11 +254,14 @@ function VirtualPageCanvas:getMaxScrollOffset()
     if self.view_mode ~= 1 then
         return 0
     end
+
     local total_h = self:getVirtualHeight()
     local _, viewport_h = self:getViewportSize()
+
     if viewport_h <= 0 then
         return 0
     end
+
     return math.max(0, total_h - viewport_h)
 end
 
@@ -477,62 +482,31 @@ function VirtualPageCanvas:paintSinglePage(target, x, y)
 end
 
 function VirtualPageCanvas:getDualPagePair(current_page)
-    -- In dual page mode, we inject empty pages at position 0 and after the last page so that:
-    -- - Page 1 appears alone (with empty page 0)
-    -- - Pages 2-3, 4-5, 6-7, etc. form proper spreads
-    -- - If page count is odd, last page appears with empty page
-    --
-    -- LTR (page_direction == 0): Lower page on left, higher on right
-    -- RTL (page_direction == 1): Higher page on LEFT, lower on RIGHT (manga style)
-
-    local page_count = self.document and self.document:getPageCount() or 1
-
-    -- Landscape pages display solo
-    if self.document and self.document:getPageOrientation(current_page) == 1 then
-        return current_page, -1  -- -1 marks solo page
+    if not self.document then
+        return current_page, 0
     end
 
-    if current_page == 1 then
-        if self.page_direction == 1 then
-            -- RTL: empty on left, page 1 on right (manga style - start from right)
-            return 0, 1
+    if not self.document._dual_page_layout then
+        if self.document._buildDualPageLayout then
+            self.document:_buildDualPageLayout(self.page_direction)
         else
-            -- LTR: page 1 on left, empty on right
-            return 1, 0
-        end
-    end
-
-    local is_last_odd = (current_page == page_count and page_count % 2 == 1)
-
-    if is_last_odd then
-        if self.page_direction == 1 then
-            -- RTL: empty on left, last page on right
-            return 0, current_page
-        else
-            -- LTR: last page on left, empty on right
             return current_page, 0
         end
     end
 
-    if self.page_direction == 1 then
-        -- RTL: manga reading direction - higher page on left, lower on right
-        if current_page % 2 == 0 then
-            -- Even page: pair with next odd page (on left)
-            return current_page + 1, current_page
-        else
-            -- Odd page: pair with previous even page (on right)
-            return current_page, current_page - 1
+    local pair = self.document._dual_page_layout[current_page]
+    if pair then
+        local left_page, right_page = pair[1], pair[2]
+
+        if left_page == right_page then
+            return current_page, -1  -- Signal solo display
         end
-    else
-        -- LTR: comics/webtoon reading direction
-        if current_page % 2 == 0 then
-            -- Even page: pair with previous odd (on left)
-            return current_page - 1, current_page
-        else
-            -- Odd page: pair with next even page (on right)
-            return current_page, current_page + 1
-        end
+
+        return left_page, right_page
     end
+
+    logger.warn("VPC:getDualPagePair", "No layout entry for page", current_page)
+    return current_page, 0
 end
 
 function VirtualPageCanvas:_computeZoomForDualPage(left_page, right_page, page_width, vp_h)
@@ -548,14 +522,10 @@ function VirtualPageCanvas:_computeZoomForDualPage(left_page, right_page, page_w
         right_dims = self.document:getNativePageDimensions(right_page)
     end
 
-    -- If both pages are empty, return default zoom
     if not left_dims and not right_dims then return 1.0 end
 
-    -- If one page is empty, use the other page's dimensions
     if not left_dims then left_dims = right_dims end
     if not right_dims then right_dims = left_dims end
-
-    -- Calculate zoom to fit both pages
     local zoom_left_w = page_width / left_dims.w
     local zoom_left_h = vp_h / left_dims.h
     local zoom_left = math.min(zoom_left_w, zoom_left_h)
@@ -564,7 +534,6 @@ function VirtualPageCanvas:_computeZoomForDualPage(left_page, right_page, page_w
     local zoom_right_h = vp_h / right_dims.h
     local zoom_right = math.min(zoom_right_w, zoom_right_h)
 
-    -- Use the smaller zoom so both pages fit
     local zoom = math.min(zoom_left, zoom_right)
 
     zoom = math.max(0.01, zoom)
@@ -574,7 +543,6 @@ end
 function VirtualPageCanvas:_getDualPageRect(page, zoom, side, page_width, vp_h, gap_offset)
     if not self.document then return nil end
 
-    -- Page 0 is the injected empty page - return nil to skip rendering
     if page == 0 then return nil end
 
     gap_offset = gap_offset or 0
@@ -585,13 +553,11 @@ function VirtualPageCanvas:_getDualPageRect(page, zoom, side, page_width, vp_h, 
     local zoomed_w = dims.w * zoom
     local zoomed_h = dims.h * zoom
 
-    -- Calculate x offset based on side
     local x_offset = self.padding
     if side == "right" then
         x_offset = x_offset + page_width + gap_offset
     end
 
-    -- Center within allocated space
     x_offset = x_offset + (page_width - zoomed_w) / 2
     local y_offset = self.padding + (vp_h - zoomed_h) / 2
 
@@ -615,26 +581,21 @@ function VirtualPageCanvas:paintDualPage(target, x, y)
         return
     end
 
-    -- Calculate available width per page (with gap)
     local gap = self.dual_page_gap
     local page_width = (viewport_w - gap) / 2
 
-    -- Determine which two pages to show
     local left_page, right_page = self:getDualPagePair(page)
 
-    -- Handle landscape spread (solo display)
     if right_page == -1 then
         self:paintSinglePage(target, x, y)
         return
     end
 
-    -- Calculate zoom to fit both pages
     local zoom = self:_computeZoomForDualPage(left_page, right_page, page_width, viewport_h)
     if zoom <= 0 then zoom = 1.0 end
 
     local rotation = self.rotation or 0
 
-    -- Render left page (skip if page 0 - empty page)
     if left_page > 0 and left_page <= page_count then
         local left_rect_info = self:_getDualPageRect(left_page, zoom, "left", page_width, viewport_h)
         if left_rect_info then
@@ -666,7 +627,6 @@ function VirtualPageCanvas:paintDualPage(target, x, y)
         end
     end
 
-    -- Render right page (skip if page 0 - empty page)
     if right_page > 0 and right_page <= page_count then
         local right_rect_info = self:_getDualPageRect(right_page, zoom, "right", page_width, viewport_h, gap)
         if right_rect_info then

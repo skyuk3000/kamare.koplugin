@@ -99,7 +99,7 @@ local KamareOptions = {
                 help_text = _([[Set how the page should be resized to fit the screen. In continuous mode, only 'width' is available for consistent page alignment.]]),
                 enabled_func = function(configurable)
                     local mode = configurable.view_mode or 0
-                    return mode == 0 or mode == 2
+                    return mode == 0 or mode == 1
                 end,
             },
             {

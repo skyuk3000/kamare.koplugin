@@ -1,4 +1,3 @@
-local BD = require("ui/bidi")
 local Device = require("device")
 local KamareFooter = require("kamarefooter")
 local MD5 = require("ffi/sha2").md5
@@ -98,7 +97,6 @@ function KamareImageViewer:init()
     self.current_image_start_time = os.time()
     self.title_bar_visible = false
 
-    -- Save initial rotation mode to restore on close
     self.initial_rotation_mode = Screen:getRotationMode()
 
     if not CanvasContext.device then
@@ -150,10 +148,7 @@ function KamareImageViewer:init()
         self:_postViewProgress()
 
         if self.ui and self.ui.statistics and self.doc_settings then
-            logger.info("KamareImageViewer: Calling statistics:onReaderReady")
             self.ui.statistics:onReaderReady(self.doc_settings)
-        else
-            logger.dbg("KamareImageViewer: Statistics not initialized - ui.statistics:", self.ui and self.ui.statistics or "nil", "doc_settings:", self.doc_settings or "nil")
         end
     end)
 end
@@ -178,6 +173,7 @@ function KamareImageViewer:_initDocument()
         cache_id = cache_id,
         cache_mod_time = 0,
         render_quality = self.render_quality or -1,
+        content_type = self.metadata and self.metadata.content_type or "auto",
     }
 
     if not self.virtual_document.is_open then
@@ -217,18 +213,13 @@ end
 
 function KamareImageViewer:_setupStatisticsInterface()
     if not (self.ui and self.virtual_document) then
-        logger.dbg("KamareImageViewer: Statistics setup skipped - no ui or virtual_document")
         return
     end
 
     if not self.ui.statistics then
-        logger.dbg("KamareImageViewer: Statistics plugin not available on ui")
         return
     end
 
-    logger.info("KamareImageViewer: Setting up statistics interface")
-
-    -- Wrapper delegates to viewer state for statistics
     local viewer_ref = self
     local doc_wrapper = setmetatable({}, {
         __index = function(t, k)
@@ -247,18 +238,11 @@ function KamareImageViewer:_setupStatisticsInterface()
     self.document = doc_wrapper
     self.ui.document = doc_wrapper
     if self.ui.statistics then
-        logger.dbg("KamareImageViewer: Setting document on statistics plugin")
         self.ui.statistics.document = doc_wrapper
         self.ui.statistics.view = nil
-    else
-        logger.warn("KamareImageViewer: self.ui.statistics is nil!")
     end
 
-    -- Generate MD5 hash for this virtual document
-    -- Since virtual paths like "virtualimage://..." can't be opened as files,
-    -- we hash the virtual path directly instead of using util.partialMD5()
     local partial_md5 = MD5(self.virtual_document.file)
-    logger.dbg("KamareImageViewer: Generated MD5 for", self.virtual_document.file, "=", partial_md5)
 
     local stats_data = {
         performance_in_pages = {},
@@ -303,8 +287,6 @@ function KamareImageViewer:_setupStatisticsInterface()
         language = "N/A",
         pages = self._images_list_nb,
     }
-
-    logger.dbg("KamareImageViewer: doc_props =", doc_props.display_title, "pages:", doc_props.pages)
 
     self.doc_props = doc_props
     self.ui.doc_props = doc_props
@@ -352,14 +334,11 @@ function KamareImageViewer:_setupStatisticsInterface()
     self.view = view_stub
     if self.ui.statistics then
         self.ui.statistics.view = view_stub
-        logger.dbg("KamareImageViewer: Statistics plugin document set?", self.ui.statistics.document ~= nil)
     end
 
     if not self.bookinfo and self.ui.bookinfo then
         self.bookinfo = self.ui.bookinfo
     end
-
-    logger.info("KamareImageViewer: Statistics interface setup complete")
 end
 
 function KamareImageViewer:_updateDimensions()
@@ -391,7 +370,6 @@ function KamareImageViewer:loadSettings()
     self.configurable.background_color = self.background_color
     self.configurable.rotation_lock = false
 
-    -- Load saved settings (will override defaults if saved values exist)
     self.configurable:loadSettings(self.kamare_settings, self.options.prefix .. "_")
 
     self.footer_settings.mode = self.configurable.footer_mode
@@ -559,12 +537,43 @@ function KamareImageViewer:getFooterState()
         end
     end
 
+    -- In dual-page mode, calculate display page accounting for landscape solos
+    local display_page = self._images_list_cur
+    if self.view_mode == 2 and self.canvas and self.virtual_document then
+        local left, right = self.canvas:getDualPagePair(self._images_list_cur)
+
+        -- Get the base page number
+        local base_page
+        if right == -1 then
+            -- Landscape solo
+            base_page = left
+        elseif left <= 0 then
+            base_page = right
+        elseif right <= 0 then
+            base_page = left
+        else
+            base_page = math.min(left, right)
+        end
+
+        -- Count landscape solos before this page (each counts as 2 pages)
+        local landscape_before = 0
+        for p = 1, base_page - 1 do
+            local __, p_right = self.canvas:getDualPagePair(p)
+            if p_right == -1 then
+                landscape_before = landscape_before + 1
+            end
+        end
+
+        -- Display page = base page + landscape solos before it
+        display_page = base_page + landscape_before
+    end
+
     -- Calculate time estimate
-    local remaining = self._images_list_nb - self._images_list_cur
+    local remaining = self._images_list_nb - display_page
     local time_estimate = self:getTimeEstimate(remaining)
 
-    return {
-        current_page = self._images_list_cur,
+    local footer_state = {
+        current_page = display_page,
         total_pages = self._images_list_nb,
         has_document = self.virtual_document ~= nil,
         is_scroll_mode = (self.view_mode == 1) or false,
@@ -572,6 +581,8 @@ function KamareImageViewer:getFooterState()
         time_estimate = time_estimate,
         is_rtl_mode = (self.view_mode == 2 and self.page_direction == 1) or false,
     }
+
+    return footer_state
 end
 
 function KamareImageViewer:updateFooter()
@@ -701,20 +712,25 @@ function KamareImageViewer:onTapMinibar()
     if not self.footer_settings.enabled or not self.virtual_document or self._images_list_nb <= 1 then
         return false
     end
+
     if self.footer_settings.lock_tap then
         return self:onShowConfigMenu()
     end
+
     self:cycleToNextValidMode()
+
     return true
 end
 
 function KamareImageViewer:onTapForward()
     self:onShowNextImage()
+
     return true
 end
 
 function KamareImageViewer:onTapBackward()
     self:onShowPrevImage()
+
     return true
 end
 
@@ -1058,10 +1074,6 @@ end
 
 function KamareImageViewer:_scrollBy(delta)
     self:_setScrollOffset((self.scroll_offset or 0) + delta)
-    -- Force UI refresh for scroll mode
-    if self.view_mode == 1 then
-        UIManager:setDirty(self, "partial", self.main_frame.dimen)
-    end
 end
 
 function KamareImageViewer:_scrollStep(direction)
@@ -1282,7 +1294,6 @@ end
 function KamareImageViewer:calculateAdaptivePrefetch()
     if self._images_list_cur <= 1 and not self._initial_prefetch_done then
         self._initial_prefetch_done = true
-        logger.dbg("KamareImageViewer: Initial load - prefetching only 1 page for quick startup")
         return 1
     end
 
@@ -1438,6 +1449,7 @@ end
 
 function KamareImageViewer:_canPanInPageMode(direction)
     if self.view_mode == 1 then return false end
+    if self.view_mode == 2 then return false end  -- Disable panning in dual-page mode
     if not (self.canvas and self.virtual_document) then return false end
 
     local viewport_w, viewport_h = self.canvas:getViewportSize()
@@ -1564,7 +1576,6 @@ function KamareImageViewer:switchToImageNum(page)
     self.current_image_start_time = os.time()
 
     if self.ui and self.ui.statistics then
-        logger.dbg("KamareImageViewer: Page changed via switchToImageNum to", page)
         self.ui.statistics:onPageUpdate(page)
     end
 
@@ -1653,7 +1664,18 @@ function KamareImageViewer:_showNextImageInternal()
     -- In dual-page mode, advance by 2 pages (or 1 for landscape)
     local step = (self.view_mode == 2) and self:_getDualPageStep(self._images_list_cur, 1) or 1
 
-    if self._images_list_cur < self._images_list_nb then
+    -- Check if we can navigate forward
+    local can_advance
+    if self.view_mode == 2 and self.canvas and self.virtual_document then
+        -- In dual-page mode, check if any page in current pair is the last page
+        local left, right = self.canvas:getDualPagePair(self._images_list_cur)
+        local max_in_pair = math.max(left, right)
+        can_advance = max_in_pair < self._images_list_nb
+    else
+        can_advance = self._images_list_cur < self._images_list_nb
+    end
+
+    if can_advance then
         self:switchToImageNum(self._images_list_cur + step)
     else
         self:_checkAndOfferNextChapter()
@@ -1699,7 +1721,6 @@ end
 
 function KamareImageViewer:_checkAndOfferNextChapter()
     if not (self.metadata and KavitaClient and KavitaClient.bearer) then
-        logger.dbg("KamareImageViewer: Cannot check next chapter - missing metadata or KavitaClient")
         return
     end
 
@@ -1781,13 +1802,21 @@ function KamareImageViewer:_postViewProgress()
         end
     end
 
+    -- In dual-page mode, post the furthest page in the current pair for progress tracking
+    local current_page = self._images_list_cur
+    if self.view_mode == 2 and self.canvas and self.virtual_document then
+        local left, right = self.canvas:getDualPagePair(self._images_list_cur)
+        -- Use the maximum page (furthest progress)
+        current_page = math.max(left, right)
+    end
+
     local page_to_post
-    local on_last_page = self._images_list_cur == self._images_list_nb
+    local on_last_page = current_page == self._images_list_nb
 
     if on_last_page or at_end then
-        page_to_post = self._images_list_cur
+        page_to_post = current_page
     else
-        page_to_post = math.max(1, self._images_list_cur - 1)
+        page_to_post = math.max(1, current_page - 1)
     end
 
     if self.last_posted_page == page_to_post and not (at_end or on_last_page) then return end
@@ -1882,29 +1911,15 @@ function KamareImageViewer:_getRotationAngle()
 end
 
 function KamareImageViewer:_getDualPageStep(current_page, direction)
-    -- Returns step size for dual-page navigation (1 or 2)
+    -- Returns step size for dual-page navigation
+    -- In dual-page mode, we navigate by spreads, not by individual pages
     -- direction: 1 for forward, -1 for backward
-    if self.view_mode ~= 2 or not self.virtual_document then
+    if self.view_mode ~= 2 or not self.canvas or not self.virtual_document then
         return 1
     end
 
-    -- Current page is landscape: step by 1
-    if self.virtual_document:getPageOrientation(current_page) == 1 then
-        return 1
-    end
-
-    -- Check next/previous page
-    local check_page = current_page + direction
-    if check_page < 1 or check_page > self._images_list_nb then
-        return 1
-    end
-
-    -- Next/prev page is landscape: step by 1
-    if self.virtual_document:getPageOrientation(check_page) == 1 then
-        return 1
-    end
-
-    -- Both portrait: normal dual-page step of 2
+    -- Always step by 2 in dual-page mode to keep page count consistent
+    -- Landscape solos count as 2 pages (merged spread), normal pairs are 2 pages
     return 2
 end
 
