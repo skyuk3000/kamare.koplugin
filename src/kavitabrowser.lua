@@ -1019,6 +1019,11 @@ function KavitaBrowser:launchKavitaChapterViewer(chapter, series_name, is_volume
         return
     end
 
+    -- Show loading indicator
+    local loading = InfoMessage:new{ text = _("Loading..."), timeout = 0 }
+    UIManager:show(loading)
+    UIManager:forceRePaint()
+
     -- Make sure client has bearer/base_url/api_key (authenticateAfterSelection sets those)
     local page_table = KavitaClient:streamChapter(chapter.id)
 
@@ -1229,6 +1234,10 @@ function KavitaBrowser:launchKavitaChapterViewer(chapter, series_name, is_volume
             end)
         end,
     }
+
+    -- Close loading indicator before showing viewer
+    UIManager:close(loading)
+
     UIManager:show(viewer)
     return viewer
 end
