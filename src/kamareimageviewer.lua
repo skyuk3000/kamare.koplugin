@@ -900,10 +900,12 @@ function KamareImageViewer:onSetViewMode(value)
     self.configurable.view_mode = mode
     self._pending_scroll_page = self._images_list_cur
 
-    -- Update page count when switching modes
+    if self.virtual_document then
+        self.virtual_document:clearCache()
+    end
+
     self:_updatePageCount()
 
-    -- Continuous mode requires width-fit zoom
     if mode == 1 then
         if self.zoom_mode ~= 1 then
             self.zoom_mode = 1

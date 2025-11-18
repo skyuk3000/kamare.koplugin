@@ -232,8 +232,8 @@ function VirtualPageCanvas:getViewportSize()
         horizontal_spacing = self.padding + (self.horizontal_margin or 0)
     end
 
-    local w = math.max(0, self.dimen.w - 2 * horizontal_spacing)
-    local h = math.max(0, self.dimen.h - 2 * self.padding)
+    local w = math.floor(math.max(0, self.dimen.w - 2 * horizontal_spacing))
+    local h = math.floor(math.max(0, self.dimen.h - 2 * self.padding))
 
     return w, h
 end
@@ -496,11 +496,7 @@ function VirtualPageCanvas:getDualPagePair(current_page)
         local page1, page2 = pair[1], pair[2]
 
         if current_page == page1 or current_page == page2 then
-            logger.warn(string.format("VPC:getDualPagePair page %d found in pairs[%d] {%d, %d}", current_page, i, page1, page2))
-
-            -- Check for landscape solo spreads (same non-zero page number)
             if page1 == page2 and page1 > 0 then
-                logger.warn("VPC:getDualPagePair SOLO landscape display for page", current_page)
                 return current_page, -1  -- Signal solo landscape display
             end
 
@@ -510,7 +506,6 @@ function VirtualPageCanvas:getDualPagePair(current_page)
             if self.page_direction == 1 then
                 -- RTL: swap pages (right page comes first in reading order)
                 left_page, right_page = page2, page1
-                logger.warn(string.format("VPC:getDualPagePair RTL mode, swapped to {%d, %d}", left_page, right_page))
             else
                 -- LTR: keep physical order
                 left_page, right_page = page1, page2
@@ -520,7 +515,6 @@ function VirtualPageCanvas:getDualPagePair(current_page)
         end
     end
 
-    logger.warn("VPC:getDualPagePair No pair found for page", current_page)
     return current_page, 0
 end
 
@@ -597,7 +591,7 @@ function VirtualPageCanvas:paintDualPage(target, x, y)
     end
 
     local gap = self.dual_page_gap
-    local page_width = (viewport_w - gap) / 2
+    local page_width = math.floor((viewport_w - gap) / 2)
 
     local left_page, right_page = self:getDualPagePair(page)
 
@@ -741,41 +735,47 @@ function VirtualPageCanvas:paintScroll(target, x, y, retry)
         if remain <= 0 then break end
         local visible_h = page_info.visible_bottom - page_info.visible_top
         local slice_h_px = math.min(math.floor(visible_h), remain)
-        if slice_h_px <= 0 then goto continue end
-        local top_px = math.floor(page_info.visible_top - page_info.page_top)
+        if slice_h_px <= 0 then
+            prev_page = page_info.page_num
+        else
+            local top_px = math.floor(page_info.visible_top - page_info.page_top)
 
-        local layout = page_info.layout
-        local page_zoom = page_info.zoom or zoom
+            local layout = page_info.layout
+            local page_zoom = page_info.zoom or zoom
 
-        local scaled_w = math.floor((layout.rotated_width or layout.native_width) * page_zoom)
+            local scaled_w = math.floor((layout.rotated_width or layout.native_width) * page_zoom)
 
-        local horizontal_spacing = self.padding + (self.horizontal_margin or 0)
-        local dest_x = x + horizontal_spacing + math.floor((viewport_w - scaled_w) / 2)
-        local dest_y = y + stacked_y
+            local horizontal_spacing = self.padding + (self.horizontal_margin or 0)
+            local dest_x = x + horizontal_spacing + math.floor((viewport_w - scaled_w) / 2)
+            local dest_y = y + stacked_y
 
-        local native_y = math.floor(top_px / page_zoom)
-        local native_h = math.floor(slice_h_px / page_zoom)
+            local native_y = math.floor(top_px / page_zoom)
+            local native_h = math.floor(slice_h_px / page_zoom)
 
-        local rect = Geom:new{
-            x = 0,
-            y = native_y,
-            w = layout.native_width,
-            h = native_h,
-        }
+            local native_dims = Geom:new{ w = layout.native_width, h = layout.native_height }
+            local render_w, render_h = self.document:_calculateRenderDimensions(native_dims)
+            local render_scale_y = render_h / native_dims.h
+            local scaled_h = math.floor(native_h * render_scale_y)
+            local zoom_scale_y = page_zoom / render_scale_y
+            local actual_slice_h_px = math.floor(scaled_h * zoom_scale_y)
 
-        local ok_draw = pcall(function()
-            return self.document:drawPageTiled(target, dest_x, dest_y, rect, page_info.page_num, page_zoom, self.rotation, nil, 1, false)
-        end)
-        if not ok_draw then
-            logger.warn("VPC:paintScroll tiled slice render failed", "page", page_info.page_num)
+            local rect = Geom:new{
+                x = 0,
+                y = native_y,
+                w = layout.native_width,
+                h = native_h,
+            }
+
+            local ok_draw = pcall(function()
+                return self.document:drawPageTiled(target, dest_x, dest_y, rect, page_info.page_num, page_zoom, self.rotation, nil, 1, false)
+            end)
+            if not ok_draw then
+                logger.warn("VPC:paintScroll tiled slice render failed", "page", page_info.page_num)
+            end
+
+            stacked_y = stacked_y + actual_slice_h_px
+            prev_page = page_info.page_num
         end
-
-        local actual_rendered_h = math.floor(native_h * page_zoom)
-
-        stacked_y = stacked_y + actual_rendered_h
-        prev_page = page_info.page_num
-
-        ::continue::
     end
 
 end

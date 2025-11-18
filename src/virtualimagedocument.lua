@@ -138,6 +138,11 @@ end
 
 function VirtualImageDocument:clearCache()
     VIDCache:clear()
+
+    self._virtual_layout_cache = nil
+    self.virtual_layout = nil
+    self.total_virtual_height = nil
+    self._virtual_layout_dirty = true
 end
 
 function VirtualImageDocument:close()
@@ -203,18 +208,21 @@ function VirtualImageDocument:_ensureVirtualLayout(rotation)
         rotated_max_width = 0,
     }
 
-    local native_offset = 0
-    local rotated_offset = 0
+    local native_offset = 0.0
+    local rotated_offset = 0.0
 
     for i = 1, self._pages do
         local dims = self:_getDimsWithDefault(i)
         local native_w = dims.w
         local native_h = dims.h
+        local render_w, render_h = self:_calculateRenderDimensions(dims)
+        local render_scale_x = render_w / native_w
+        local render_scale_y = render_h / native_h
+        local rotated_w, rotated_h
 
-        local rotated_dims = self:transformRect(Geom:new{ w = native_w, h = native_h }, 1, rotation)
-        local rotated_w = rotated_dims and rotated_dims.w or native_w
-        local rotated_h = rotated_dims and rotated_dims.h or native_h
-        if rotated_w <= 0 or rotated_h <= 0 then
+        if rotation == 90 or rotation == 270 then
+            rotated_w, rotated_h = native_h, native_w
+        else
             rotated_w, rotated_h = native_w, native_h
         end
 
@@ -224,8 +232,10 @@ function VirtualImageDocument:_ensureVirtualLayout(rotation)
             native_height = native_h,
             rotated_width = rotated_w,
             rotated_height = rotated_h,
-            native_y_offset = native_offset,
-            rotated_y_offset = rotated_offset,
+            native_y_offset = math.floor(native_offset),
+            rotated_y_offset = math.floor(rotated_offset),
+            render_scale_x = render_scale_x,
+            render_scale_y = render_scale_y,
         }
 
         entry.native_max_width = math.max(entry.native_max_width, native_w)
@@ -247,31 +257,18 @@ function VirtualImageDocument:_ensureVirtualLayout(rotation)
     return entry
 end
 
-function VirtualImageDocument:_calculateRenderDimensions(native_dims, cap_height)
+function VirtualImageDocument:_calculateRenderDimensions(native_dims)
     local render_w = native_dims.w
     local render_h = native_dims.h
-
-    if cap_height == nil then
-        cap_height = true
-    end
 
     if self.render_quality ~= -1 then
         local screen_size = Screen:getSize()
         local cap_w = math.floor(screen_size.w * self.render_quality)
 
-        if cap_height then
-            local cap_h = math.floor(screen_size.h * self.render_quality)
-            if native_dims.w > cap_w or native_dims.h > cap_h then
-                local scale = math.min(cap_w / native_dims.w, cap_h / native_dims.h)
-                render_w = math.floor(native_dims.w * scale)
-                render_h = math.floor(native_dims.h * scale)
-            end
-        else
-            if native_dims.w > cap_w then
-                local scale = cap_w / native_dims.w
-                render_w = math.floor(native_dims.w * scale)
-                render_h = math.floor(native_dims.h * scale)
-            end
+        if native_dims.w > cap_w then
+            local scale = cap_w / native_dims.w
+            render_w = math.floor(native_dims.w * scale)
+            render_h = math.floor(native_dims.h * scale)
         end
     end
 
@@ -566,7 +563,12 @@ function VirtualImageDocument:getVirtualHeight(zoom, rotation, zoom_mode, viewpo
         for _, page in ipairs(entry.pages or {}) do
             if page.native_width and page.native_width > 0 then
                 local page_zoom = viewport_width / page.native_width
-                total_height = total_height + page.rotated_height * page_zoom
+                local render_scale_y = page.render_scale_y or 1.0
+                local scaled_h = math.floor(page.rotated_height * render_scale_y)
+                local zoom_scale_y = page_zoom / render_scale_y
+                local page_height = math.floor(scaled_h * zoom_scale_y)
+
+                total_height = total_height + page_height
             end
         end
         return total_height
@@ -610,7 +612,12 @@ function VirtualImageDocument:getVisiblePagesAtOffset(offset_y, viewport_height,
             end
 
             page_top = accumulated_offset
-            page_height = page.rotated_height * page_zoom
+
+            local render_scale_y = page.render_scale_y or 1.0
+            local scaled_h = math.floor(page.rotated_height * render_scale_y)
+            local zoom_scale_y = page_zoom / render_scale_y
+
+            page_height = math.floor(scaled_h * zoom_scale_y)
             accumulated_offset = accumulated_offset + page_height
         else
             page_top = page.rotated_y_offset * zoom
@@ -660,7 +667,12 @@ function VirtualImageDocument:getScrollPositionForPage(pageno, zoom, rotation, z
             local p = entry.pages[i]
             if p and p.native_width and p.native_width > 0 then
                 local page_zoom = viewport_width / p.native_width
-                accumulated_offset = accumulated_offset + p.rotated_height * page_zoom
+                local render_scale_y = p.render_scale_y or 1.0
+                local scaled_h = math.floor(p.rotated_height * render_scale_y)
+                local zoom_scale_y = page_zoom / render_scale_y
+                local page_height = math.floor(scaled_h * zoom_scale_y)
+
+                accumulated_offset = accumulated_offset + page_height
             end
         end
         return accumulated_offset
@@ -689,12 +701,18 @@ function VirtualImageDocument:getPageAtOffset(offset_y, zoom, rotation, zoom_mod
             if page.native_width and page.native_width > 0 then
                 page_zoom = viewport_width / page.native_width
             end
-            local page_height = page.rotated_height * page_zoom
+
+            local render_scale_y = page.render_scale_y or 1.0
+            local scaled_h = math.floor(page.rotated_height * render_scale_y)
+            local zoom_scale_y = page_zoom / render_scale_y
+            local page_height = math.floor(scaled_h * zoom_scale_y)
             local page_top = accumulated_offset
             local page_bottom = page_top + page_height
+
             if offset_y >= page_top and offset_y < page_bottom then
                 return page.page_num
             end
+
             accumulated_offset = accumulated_offset + page_height
         end
     else
@@ -809,7 +827,6 @@ function VirtualImageDocument:renderPage(pageno, rect, zoom, rotation, page_mode
         return nil
     end
 
-    local clamped_rect = Geom:new{ x = offset_x, y = offset_y, w = native_w, h = native_h }
     local hash = self:_tileHash(pageno, zoom, rotation, self.gamma, native_rect)
 
     local native_tile = VIDCache:getNativeTile(hash)
@@ -825,8 +842,7 @@ function VirtualImageDocument:renderPage(pageno, rect, zoom, rotation, page_mode
         return nil
     end
 
-    local cap_height = (page_mode == nil) or page_mode
-    local render_w, render_h = self:_calculateRenderDimensions(native_dims, cap_height)
+    local render_w, render_h = self:_calculateRenderDimensions(native_dims)
 
     local ok, full_bb = pcall(mupdf.renderImage, raw_data, #raw_data, render_w, render_h)
     if not ok or not full_bb then
@@ -840,21 +856,24 @@ function VirtualImageDocument:renderPage(pageno, rect, zoom, rotation, page_mode
     local render_scale_x = render_w / native_dims.w
     local render_scale_y = render_h / native_dims.h
 
-    local scaled_offset_x = math.floor(offset_x * render_scale_x + 0.5)
-    local scaled_offset_y = math.floor(offset_y * render_scale_y + 0.5)
-    local scaled_w = math.floor(native_w * render_scale_x + 0.5)
-    local scaled_h = math.floor(native_h * render_scale_y + 0.5)
+    local scaled_offset_x = math.floor(offset_x * render_scale_x)
+    local scaled_offset_y = math.floor(offset_y * render_scale_y)
+    local scaled_end_x = math.floor((offset_x + native_w) * render_scale_x)
+    local scaled_end_y = math.floor((offset_y + native_h) * render_scale_y)
+    local scaled_w = scaled_end_x - scaled_offset_x
+    local scaled_h = scaled_end_y - scaled_offset_y
 
     local tile_bb = Blitbuffer.new(scaled_w, scaled_h, self.render_color and Blitbuffer.TYPE_BBRGB32 or Blitbuffer.TYPE_BB8)
-    tile_bb:blitFrom(full_bb, 0, 0, scaled_offset_x, scaled_offset_y, scaled_w, scaled_h)
 
+    tile_bb:blitFrom(full_bb, 0, 0, scaled_offset_x, scaled_offset_y, scaled_w, scaled_h)
     full_bb:free()
 
+    local scaled_rect = Geom:new{ x = scaled_offset_x, y = scaled_offset_y, w = scaled_w, h = scaled_h }
     local tile = TileCacheItem:new{
         persistent = true,
         doc_path = self.file,
         created_ts = os.time(),
-        excerpt = clamped_rect,
+        excerpt = scaled_rect,
         pageno = pageno,
         bb = tile_bb,
     }
@@ -882,10 +901,12 @@ function VirtualImageDocument:_scaleToZoom(native_tile, zoom, rotation, clip_rec
         local rel_x = clip_rect.x - tile_excerpt.x
         local rel_y = clip_rect.y - tile_excerpt.y
 
-        local bb_x = math.floor(rel_x * render_scale_x + 0.5)
-        local bb_y = math.floor(rel_y * render_scale_y + 0.5)
-        local bb_w = math.floor(clip_rect.w * render_scale_x + 0.5)
-        local bb_h = math.floor(clip_rect.h * render_scale_y + 0.5)
+        local bb_x = math.floor(rel_x * render_scale_x)
+        local bb_y = math.floor(rel_y * render_scale_y)
+        local bb_end_x = math.floor((rel_x + clip_rect.w) * render_scale_x)
+        local bb_end_y = math.floor((rel_y + clip_rect.h) * render_scale_y)
+        local bb_w = bb_end_x - bb_x
+        local bb_h = bb_end_y - bb_y
 
         local orig_bb_w = input_bb:getWidth()
         local orig_bb_h = input_bb:getHeight()
@@ -918,8 +939,8 @@ function VirtualImageDocument:_scaleToZoom(native_tile, zoom, rotation, clip_rec
     local effective_zoom_x = zoom / render_scale_x
     local effective_zoom_y = zoom / render_scale_y
 
-    local target_w = math.ceil(native_w * effective_zoom_x)
-    local target_h = math.ceil(native_h * effective_zoom_y)
+    local target_w = math.floor(native_w * effective_zoom_x + 0.5)
+    local target_h = math.floor(native_h * effective_zoom_y + 0.5)
 
     if target_w <= 0 or target_h <= 0 then
         return native_tile
@@ -945,8 +966,8 @@ function VirtualImageDocument:_scaleToZoom(native_tile, zoom, rotation, clip_rec
         bb = scaled_bb,
     }
     scaled_tile.size = tonumber(scaled_bb.stride) * scaled_bb.h + 512
-    scaled_tile.render_scale_x = native_tile.render_scale_x
-    scaled_tile.render_scale_y = native_tile.render_scale_y
+    scaled_tile.render_scale_x = zoom
+    scaled_tile.render_scale_y = zoom
 
     return scaled_tile
 end
@@ -971,9 +992,12 @@ function VirtualImageDocument:_preSplitPageTiles(pageno, zoom, rotation, tile_px
     local native = self:getNativePageDimensions(pageno)
     if not native or native.w <= 0 or native.h <= 0 then return end
 
-    local full_rect = Geom:new{ x = 0, y = 0, w = native.w, h = native.h }
+    local render_w, render_h = self:_calculateRenderDimensions(native)
+    local render_scale_x = render_w / native.w
+    local render_scale_y = render_h / native.h
+    local scaled_rect = Geom:new{ x = 0, y = 0, w = render_w, h = render_h }
     local tp = math.max(16, tonumber(tile_px or self.tile_px or TILE_SIZE_PX))
-    local tiles = self:_computeTileRects(full_rect, tp)
+    local tiles = self:_computeTileRects(scaled_rect, tp)
 
     if #tiles == 0 then return end
 
@@ -999,9 +1023,6 @@ function VirtualImageDocument:_preSplitPageTiles(pageno, zoom, rotation, tile_px
         return
     end
 
-    local cap_height = (page_mode == nil) or page_mode
-    local render_w, render_h = self:_calculateRenderDimensions(native, cap_height)
-
     local ok, full_bb = pcall(mupdf.renderImage, raw_data, #raw_data, render_w, render_h)
     if not ok or not full_bb then
         logger.warn("VID:_preSplitPageTiles renderImage failed", "page", pageno, "error", full_bb)
@@ -1011,23 +1032,15 @@ function VirtualImageDocument:_preSplitPageTiles(pageno, zoom, rotation, tile_px
         return
     end
 
-    local render_scale_x = render_w / native.w
-    local render_scale_y = render_h / native.h
-
     for _, t in ipairs(missing) do
-        local tx = math.max(0, math.min(t.x, native.w))
-        local ty = math.max(0, math.min(t.y, native.h))
-        local tw = math.max(0, math.min(t.w, native.w - tx))
-        local th = math.max(0, math.min(t.h, native.h - ty))
+        local tx = math.max(0, math.min(t.x, render_w))
+        local ty = math.max(0, math.min(t.y, render_h))
+        local tw = math.max(0, math.min(t.w, render_w - tx))
+        local th = math.max(0, math.min(t.h, render_h - ty))
 
         if tw > 0 and th > 0 then
-            local scaled_tx = math.floor(tx * render_scale_x + 0.5)
-            local scaled_ty = math.floor(ty * render_scale_y + 0.5)
-            local scaled_tw = math.floor(tw * render_scale_x + 0.5)
-            local scaled_th = math.floor(th * render_scale_y + 0.5)
-
-            local tile_bb = Blitbuffer.new(scaled_tw, scaled_th, self.render_color and Blitbuffer.TYPE_BBRGB32 or Blitbuffer.TYPE_BB8)
-            tile_bb:blitFrom(full_bb, 0, 0, scaled_tx, scaled_ty, scaled_tw, scaled_th)
+            local tile_bb = Blitbuffer.new(tw, th, self.render_color and Blitbuffer.TYPE_BBRGB32 or Blitbuffer.TYPE_BB8)
+            tile_bb:blitFrom(full_bb, 0, 0, tx, ty, tw, th)
 
             local tile = TileCacheItem:new{
                 persistent = true,
@@ -1050,8 +1063,50 @@ function VirtualImageDocument:_preSplitPageTiles(pageno, zoom, rotation, tile_px
 end
 
 function VirtualImageDocument:drawPageTiled(target, x, y, rect, pageno, zoom, rotation, tile_px, prefetch_rows, page_mode)
+    local native = self:getNativePageDimensions(pageno)
+
+    if not native or native.w <= 0 or native.h <= 0 then
+        logger.warn("VID:drawPageTiled invalid page dimensions", "page", pageno)
+        return false
+    end
+
+    local render_w, render_h = self:_calculateRenderDimensions(native)
+    local render_scale_x = render_w / native.w
+    local render_scale_y = render_h / native.h
+    local start_y = math.max(0, rect.y or 0)
+    local end_y = math.min(native.h, (rect.y or 0) + (rect.h or 0))
+    local clamped_h = math.max(0, end_y - start_y)
+
+    if clamped_h <= 0 then
+        logger.warn("VID:drawPageTiled rect completely outside page bounds", "page", pageno, "rect_y", rect.y, "rect_h", rect.h, "native_h", native.h)
+        return true
+    end
+
+    local base_rect = Geom:new{
+        x = math.floor((rect.x or 0) * render_scale_x),
+        y = math.floor(start_y * render_scale_y),
+        w = math.floor(math.min(rect.w or native.w, native.w) * render_scale_x),
+        h = math.floor(clamped_h * render_scale_y),
+    }
+
     local tp = math.max(16, tonumber(tile_px or self.tile_px or TILE_SIZE_PX))
-    local tiles = self:_computeTileRects(rect, tp)
+    local rows = tonumber(prefetch_rows) or 0
+
+    local prefetch_rect = base_rect
+
+    if rows > 0 then
+        local pad = rows * tp
+        local y0 = math.max(0, base_rect.y - pad)
+        local y1 = math.min(render_h, base_rect.y + base_rect.h + pad)
+        prefetch_rect = Geom:new{
+            x = base_rect.x,
+            y = y0,
+            w = base_rect.w,
+            h = math.max(0, y1 - y0),
+        }
+    end
+
+    local tiles = self:_computeTileRects(prefetch_rect, tp)
     local any_missing = false
 
     for _, t in ipairs(tiles) do
@@ -1064,45 +1119,6 @@ function VirtualImageDocument:drawPageTiled(target, x, y, rect, pageno, zoom, ro
 
     if any_missing then
         self:_preSplitPageTiles(pageno, zoom, rotation, tile_px, page_mode)
-    end
-
-    local native = self:getNativePageDimensions(pageno)
-
-    if not native or native.w <= 0 or native.h <= 0 then
-        logger.warn("VID:drawPageTiled invalid page dimensions", "page", pageno)
-        return false
-    end
-
-    local start_y = math.max(0, rect.y or 0)
-    local end_y = math.min(native.h, (rect.y or 0) + (rect.h or 0))
-    local clamped_h = math.max(0, end_y - start_y)
-
-    if clamped_h <= 0 then
-        logger.warn("VID:drawPageTiled rect completely outside page bounds", "page", pageno, "rect_y", rect.y, "rect_h", rect.h, "native_h", native.h)
-        return true
-    end
-
-    local base_rect = Geom:new{
-        x = rect.x or 0,
-        y = start_y,
-        w = math.min(rect.w or native.w, native.w),
-        h = clamped_h,
-    }
-
-    local rows = tonumber(prefetch_rows) or 0
-
-    local prefetch_rect = base_rect
-
-    if rows > 0 then
-        local pad = rows * tp
-        local y0 = math.max(0, base_rect.y - pad)
-        local y1 = math.min(native.h, base_rect.y + base_rect.h + pad)
-        prefetch_rect = Geom:new{
-            x = base_rect.x,
-            y = y0,
-            w = base_rect.w,
-            h = math.max(0, y1 - y0),
-        }
     end
 
     local need_batch = false
@@ -1121,53 +1137,60 @@ function VirtualImageDocument:drawPageTiled(target, x, y, rect, pageno, zoom, ro
 
     local batch_started = need_batch and self:_beginTileBatch(pageno) or false
 
-    tiles = self:_computeTileRects(prefetch_rect, tp)
+    tiles = self:_computeTileRects(base_rect, tp)
 
     if #tiles == 0 then return true end
 
+    local zoom_scale_x = zoom / render_scale_x
+    local zoom_scale_y = zoom / render_scale_y
+    local assembled_bb = Blitbuffer.new(base_rect.w, base_rect.h, self.render_color and Blitbuffer.TYPE_BBRGB32 or Blitbuffer.TYPE_BB8)
+    local tiles_rendered = 0
     local ok, err = pcall(function()
         for i, t in ipairs(tiles) do
-            local tile_overlap = intersectRects(t, base_rect)
-
-            if not tile_overlap then
-                goto continue
-            end
-
-            local ttile = self:renderPage(pageno, t, zoom, rotation, page_mode, tile_overlap)
-
+            local key = self:_tileHash(pageno, zoom, rotation, self.gamma, t)
+            local ttile = VIDCache:getNativeTile(key)
             if ttile and ttile.bb then
-                local actual_tile_rect = ttile.excerpt or tile_overlap
+                local tile_bb = ttile.bb
+                local tile_rect = ttile.excerpt
 
-                local overlap = intersectRects(actual_tile_rect, base_rect)
+                local overlap = intersectRects(tile_rect, base_rect)
                 if overlap then
-                    local tile_bb_w = ttile.bb:getWidth()
-                    local tile_bb_h = ttile.bb:getHeight()
+                    local src_x = overlap.x - tile_rect.x
+                    local src_y = overlap.y - tile_rect.y
+                    local src_w = overlap.w
+                    local src_h = overlap.h
 
-                    local native_src_x = overlap.x - actual_tile_rect.x
-                    local native_src_y = overlap.y - actual_tile_rect.y
+                    src_w = math.min(src_w, tile_bb:getWidth() - src_x)
+                    src_h = math.min(src_h, tile_bb:getHeight() - src_y)
 
-                    local src_x = math.floor(native_src_x * zoom + 0.5)
-                    local src_y = math.floor(native_src_y * zoom + 0.5)
+                    if src_w > 0 and src_h > 0 then
+                        local dst_x = overlap.x - base_rect.x
+                        local dst_y = overlap.y - base_rect.y
 
-                    local dst_x = x + math.floor((overlap.x - base_rect.x) * zoom + 0.5)
-                    local dst_y = y + math.floor((overlap.y - base_rect.y) * zoom + 0.5)
-
-                    local w = math.floor(overlap.w * zoom + 0.5)
-                    local h = math.floor(overlap.h * zoom + 0.5)
-
-                    local src_w_avail = tile_bb_w - src_x
-                    local src_h_avail = tile_bb_h - src_y
-                    local blit_w = math.min(w, src_w_avail)
-                    local blit_h = math.min(h, src_h_avail)
-
-                    if blit_w > 0 and blit_h > 0 then
-                        target:blitFrom(ttile.bb, dst_x, dst_y, src_x, src_y, blit_w, blit_h)
+                        assembled_bb:blitFrom(tile_bb, dst_x, dst_y, src_x, src_y, src_w, src_h)
+                        tiles_rendered = tiles_rendered + 1
                     end
                 end
             end
-
-            ::continue::
         end
+
+        if zoom_scale_x ~= 1.0 or zoom_scale_y ~= 1.0 then
+            local final_w = math.floor(base_rect.w * zoom_scale_x)
+            local final_h = math.floor(base_rect.h * zoom_scale_y)
+
+            local ok_scale, scaled_bb = pcall(mupdf.scaleBlitBuffer, assembled_bb, final_w, final_h)
+            if ok_scale and scaled_bb then
+                target:blitFrom(scaled_bb, x, y, 0, 0, final_w, final_h)
+                scaled_bb:free()
+            else
+                logger.warn("VID:drawPageTiled scaling assembled image failed, using unscaled")
+                target:blitFrom(assembled_bb, x, y, 0, 0, base_rect.w, base_rect.h)
+            end
+        else
+            target:blitFrom(assembled_bb, x, y, 0, 0, base_rect.w, base_rect.h)
+        end
+
+        assembled_bb:free()
     end)
     if batch_started then
         self:_endTileBatch()
