@@ -529,9 +529,10 @@ end
 function KavitaBrowser:buildKavitaChapterItems(chapters, kind)
     local items = {}
     if type(chapters) == "table" then
-        for i, c in ipairs(chapters) do
+        for __, c in ipairs(chapters) do
             local ch_prefix = c.number and ("Ch. " .. tostring(c.number)) or nil
             local base
+
             if c.titleName and c.titleName ~= "" then
                 local lower = c.titleName:lower()
                 if not (lower:find("ch") or lower:find("chap") or lower:find("chapter") or lower:find("vol") or lower:find("volume")) and ch_prefix then
@@ -542,8 +543,8 @@ function KavitaBrowser:buildKavitaChapterItems(chapters, kind)
             else
                 base = c.title or c.range or ch_prefix or ("Chapter #" .. tostring(c.id or "?"))
             end
-            local name = (kind == "special") and (_("Special") .. ": " .. base) or base
 
+            local name = base
             local read = c.pagesRead or c.pageRead
             local total = c.pages
             local subtitle

@@ -263,7 +263,9 @@ function VirtualImageDocument:_calculateRenderDimensions(native_dims)
 
     if self.render_quality ~= -1 then
         local screen_size = Screen:getSize()
-        local cap_w = math.floor(screen_size.w * self.render_quality)
+        -- Always use portrait width (smaller dimension) for consistent prescale across orientations
+        local portrait_w = math.min(screen_size.w, screen_size.h)
+        local cap_w = math.floor(portrait_w * self.render_quality)
 
         if native_dims.w > cap_w then
             local scale = cap_w / native_dims.w
@@ -1135,8 +1137,6 @@ function VirtualImageDocument:drawPageTiled(target, x, y, rect, pageno, zoom, ro
         end
     end
 
-    local batch_started = need_batch and self:_beginTileBatch(pageno) or false
-
     tiles = self:_computeTileRects(base_rect, tp)
 
     if #tiles == 0 then return true end
@@ -1192,9 +1192,6 @@ function VirtualImageDocument:drawPageTiled(target, x, y, rect, pageno, zoom, ro
 
         assembled_bb:free()
     end)
-    if batch_started then
-        self:_endTileBatch()
-    end
     if not ok then
         return false
     end

@@ -282,9 +282,11 @@ function VirtualPageCanvas:_computeZoomForPage(page)
 
     local page_w = dims.w
     local page_h = dims.h
+
     if self.rotation % 180 ~= 0 then
         page_w, page_h = page_h, page_w
     end
+
     if page_w <= 0 or page_h <= 0 then
         return self.zoom
     end
@@ -294,18 +296,14 @@ function VirtualPageCanvas:_computeZoomForPage(page)
 
     local result
     if self.zoom_mode == 1 then -- width
-        result = viewport_w / page_w
+        result = zoom_w
     elseif self.zoom_mode == 2 then -- height
-        result = viewport_h / page_h
+        result = zoom_h
     else
-        if zoom_w <= zoom_h then
-            result = viewport_w / page_w
-        else
-            result = viewport_h / page_h
-        end
+        result = math.min(zoom_w, zoom_h)
     end
 
-    -- Quantize zoom to integer pixels
+    -- Quantize zoom to integer pixels using the rotated page dimensions
     if self.zoom_mode == 1 then -- width
         local scaled_w = math.floor(page_w * result + 0.5)
         result = scaled_w / page_w
@@ -753,7 +751,7 @@ function VirtualPageCanvas:paintScroll(target, x, y, retry)
             local native_h = math.floor(slice_h_px / page_zoom)
 
             local native_dims = Geom:new{ w = layout.native_width, h = layout.native_height }
-            local render_w, render_h = self.document:_calculateRenderDimensions(native_dims)
+            local _, render_h = self.document:_calculateRenderDimensions(native_dims, false)
             local render_scale_y = render_h / native_dims.h
             local scaled_h = math.floor(native_h * render_scale_y)
             local zoom_scale_y = page_zoom / render_scale_y

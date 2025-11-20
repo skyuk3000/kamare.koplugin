@@ -14,14 +14,11 @@ end
 
 local function computeNativeCacheSize()
     local total = calcTileCacheSize()
-    -- Allocate ALL memory to native resolution tiles
-    -- Scaled tiles are cheap to generate (4ms) so we don't cache them
-    -- Native tiles are expensive (200ms decode), so we cache aggressively
     local native_size = total
 
     local mb_size = native_size / 1024 / 1024
     if mb_size >= 8 then
-        logger.dbg(string.format("Allocating %dMB for VirtualImageDocument native tile cache (scaled cache disabled)", mb_size))
+        logger.dbg(string.format("Allocating %dMB for VirtualImageDocument cache", mb_size))
         return native_size
     else
         logger.dbg("VirtualImageDocument native cache below minimum, using 8MB")
@@ -81,7 +78,6 @@ function VIDCache:stats()
 
     return {
         native = native_stats,
-        scaled = nil,  -- Scaled cache disabled
         utilization = native_stats.utilization,
         total_size = native_stats.total_size,
         max_size = native_stats.max_size,
