@@ -121,8 +121,6 @@ function VirtualImageDocument:init()
     self.info.title = self.title or "Virtual Image Document"
     self.info.authors = (self.metadata and self.metadata.author) or ""
     self.info.series = (self.metadata and self.metadata.seriesName) or ""
-
-    -- Mark as non-picture document so statistics will track it
     self.is_pic = false
 
     self.tile_cache_validity_ts = os.time()
@@ -131,7 +129,6 @@ function VirtualImageDocument:init()
 
     if self._pages > 0 then
         self:_preSplitPageTiles(1, 1.0, 0, nil, true)
-        -- Build dual-page layout once on init
         self:_buildDualPageLayout()
     end
 end
@@ -831,7 +828,7 @@ function VirtualImageDocument:renderPage(pageno, rect, zoom, rotation, page_mode
 
     local hash = self:_tileHash(pageno, zoom, rotation, self.gamma, native_rect)
 
-    local native_tile = VIDCache:getNativeTile(hash)
+    local native_tile = VIDCache:getNativeTile(hash, true)
     if native_tile then
         return self:_scaleToZoom(native_tile, zoom, rotation, clip_rect)
     end
@@ -1007,7 +1004,7 @@ function VirtualImageDocument:_preSplitPageTiles(pageno, zoom, rotation, tile_px
 
     for _, t in ipairs(tiles) do
         local key = self:_tileHash(pageno, zoom, rotation, self.gamma, t)
-        local exists = VIDCache:getNativeTile(key)
+        local exists = VIDCache:getNativeTile(key, true)
         if not (exists and exists.bb) then
             table.insert(missing, t)
         end
@@ -1110,12 +1107,14 @@ function VirtualImageDocument:drawPageTiled(target, x, y, rect, pageno, zoom, ro
 
     local tiles = self:_computeTileRects(prefetch_rect, tp)
     local any_missing = false
+    local cached_count = 0
 
     for _, t in ipairs(tiles) do
         local key = self:_tileHash(pageno, zoom, rotation, self.gamma, t)
-        if not VIDCache:getNativeTile(key) then
+        if not VIDCache:getNativeTile(key, true) then
             any_missing = true
-            break
+        else
+            cached_count = cached_count + 1
         end
     end
 
@@ -1129,7 +1128,7 @@ function VirtualImageDocument:drawPageTiled(target, x, y, rect, pageno, zoom, ro
         local probe_tiles = self:_computeTileRects(prefetch_rect, tp)
         for _, t in ipairs(probe_tiles) do
             local key = self:_tileHash(pageno, zoom, rotation, self.gamma, t)
-            local hit = VIDCache:getNativeTile(key)
+            local hit = VIDCache:getNativeTile(key, true)
             if not (hit and hit.bb) then
                 need_batch = true
                 break
@@ -1148,7 +1147,7 @@ function VirtualImageDocument:drawPageTiled(target, x, y, rect, pageno, zoom, ro
     local ok, err = pcall(function()
         for i, t in ipairs(tiles) do
             local key = self:_tileHash(pageno, zoom, rotation, self.gamma, t)
-            local ttile = VIDCache:getNativeTile(key)
+            local ttile = VIDCache:getNativeTile(key, true)
             if ttile and ttile.bb then
                 local tile_bb = ttile.bb
                 local tile_rect = ttile.excerpt

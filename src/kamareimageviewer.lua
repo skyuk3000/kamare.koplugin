@@ -148,7 +148,6 @@ function KamareImageViewer:init()
     self:update()
 
     UIManager:nextTick(function()
-        self:prefetchUpcomingTiles()
         self:_postViewProgress()
 
         if self.ui and self.ui.statistics and self.doc_settings then
@@ -1107,12 +1106,8 @@ function KamareImageViewer:_scrollStep(direction)
             if self._images_list_cur < self._images_list_nb then
                 self:switchToImageNum(self._images_list_cur + 1)
             else
-                local at_bottom = offset >= total - viewport_h - 1
-                if at_bottom then
-                    self:_checkAndOfferNextChapter()
-                else
-                    self:_setScrollOffset(math.max(0, total - viewport_h))
-                end
+                self:_setScrollOffset(math.max(0, total - viewport_h))
+                self:_checkAndOfferNextChapter()
             end
         else
             self:_scrollBy(step)
@@ -1302,75 +1297,66 @@ function KamareImageViewer:updateImageOnly()
 end
 
 function KamareImageViewer:calculateAdaptivePrefetch()
+    -- Initial load: prefetch immediately (1 page for continuous mode, 3 for page modes)
     if self._images_list_cur <= 1 and not self._initial_prefetch_done then
         self._initial_prefetch_done = true
-        return 1
+        return self.view_mode == 1 and 1 or 3
     end
 
+    local zoom = self:getCurrentZoom()
+    local rotation = self:_getRotationAngle()
+
+    -- Continuous scroll mode: ensure prefetch won't evict current page
     if self.view_mode == 1 then
+        local next_page = self._images_list_cur + 1
+        if next_page > self._images_list_nb then
+            return 0
+        end
+
+        local native_dims = self.virtual_document:getNativePageDimensions(next_page)
+        if native_dims and native_dims.w > 0 then
+            local first_tile = Geom:new{x=0, y=0, w=1024, h=1024}
+            local hash = self.virtual_document:_tileHash(next_page, zoom, rotation,
+                                                         self.virtual_document.gamma, first_tile)
+            if VIDCache:getNativeTile(hash) then
+                return 0
+            end
+        end
+
         return 1
     end
 
-    local ok, cache_stats = pcall(function()
-        return VIDCache:stats()
-    end)
+    -- Page modes (single/dual): check buffer
+    local cached_ahead = 0
+    for i = 1, 5 do
+        local check_page = self._images_list_cur + i
+        if check_page > self._images_list_nb then break end
 
-    if not ok or not cache_stats then
-        logger.warn("KamareImageViewer: Failed to get cache stats, using fallback prefetch")
-        return 1
-    end
-
-    local native_stats = cache_stats.native or {}
-    local total_size = native_stats.total_size or 0
-    local max_size = native_stats.max_size or 0
-    local count = native_stats.count or 0
-    local utilization = native_stats.utilization or 0
-
-    if max_size <= 0 then
-        logger.warn("KamareImageViewer: Invalid cache max_size, using fallback prefetch")
-        return 1
-    end
-
-    local avg_tile_size
-
-    if count > 0 and total_size > 0 then
-        avg_tile_size = total_size / count
-    else
-        avg_tile_size = 2 * 1024 * 1024
-    end
-
-    local tiles_capacity = math.floor(max_size / avg_tile_size)
-
-    local tiles_per_page = 20
-    local current_page = self._images_list_cur
-
-    if current_page and self.virtual_document then
-        local native_dims = self.virtual_document:getNativePageDimensions(current_page)
-
-        if native_dims and native_dims.w > 0 and native_dims.h > 0 then
-            local tiles_x = math.ceil(native_dims.w / TILE_SIZE_PX)
-            local tiles_y = math.ceil(native_dims.h / TILE_SIZE_PX)
-            tiles_per_page = tiles_x * tiles_y
+        local native_dims = self.virtual_document:getNativePageDimensions(check_page)
+        if native_dims and native_dims.w > 0 then
+            local first_tile = Geom:new{x=0, y=0, w=1024, h=1024}
+            local hash = self.virtual_document:_tileHash(check_page, zoom, rotation,
+                                                         self.virtual_document.gamma, first_tile)
+            if VIDCache:getNativeTile(hash) then
+                cached_ahead = cached_ahead + 1
+            else
+                break
+            end
         end
     end
 
-    local prefetch_pages
-
-    if utilization < 0.5 then
-        local remaining_tiles = tiles_capacity * (1.0 - utilization)
-        local max_pages_by_space = math.floor(remaining_tiles / tiles_per_page)
-
-        prefetch_pages = math.min(3, math.max(1, max_pages_by_space))
-    elseif utilization < 0.8 then
-        local remaining_tiles = tiles_capacity * (1.0 - utilization)
-        local max_pages_by_space = math.floor(remaining_tiles / tiles_per_page)
-
-        prefetch_pages = math.min(2, math.max(1, max_pages_by_space))
-    else
-        prefetch_pages = 1
+    -- Buffer full: stop prefetching
+    if cached_ahead >= 5 then
+        return 0
     end
 
-    return prefetch_pages
+    -- Dual-page mode: ensure minimum 2 pages ahead
+    if self.view_mode == 2 and cached_ahead < 2 then
+        return 2
+    end
+
+    -- Build buffer up to 5 pages
+    return math.min(3, 5 - cached_ahead)
 end
 
 function KamareImageViewer:prefetchUpcomingTiles()
@@ -1425,6 +1411,15 @@ function KamareImageViewer:prefetchUpcomingTiles()
             table.insert(pages_already_cached, check_page)
         end
     end
+
+    -- Log prefetch decision
+    logger.dbg(string.format(
+        "[Prefetch] current_page=%d target=%d cached=%s to_prefetch=%s",
+        current_page,
+        target_buffer_size,
+        table.concat(pages_already_cached, ","),
+        table.concat(pages_to_prefetch, ",")
+    ))
 
     if #pages_to_prefetch == 0 then
         return
