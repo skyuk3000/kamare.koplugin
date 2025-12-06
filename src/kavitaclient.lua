@@ -241,8 +241,27 @@ function KavitaClient:getSeriesById(seriesId)
     return data, code, headers, status, body
 end
 
--- Fetch a stream’s series by name.
--- Uses POST /api/Series/... for known dashboard streams, otherwise falls back to GET /api/Stream/{name}.
+-- Decode an encoded filter string into FilterV2Dto
+-- POST /api/Filter/decode
+-- Returns: FilterV2Dto table, code, headers, status, raw_body
+function KavitaClient:decodeFilter(encodedFilter)
+    if not encodedFilter or encodedFilter == "" then
+        logger.warn("KavitaClient:decodeFilter: encodedFilter is required")
+        return nil, nil, nil, "encodedFilter required", nil
+    end
+
+    local data, code, headers, status, body = self:apiJSON("/api/Filter/decode", {
+        method = "POST",
+        body = {
+            encodedFilter = encodedFilter,
+        },
+    })
+
+    return data, code, headers, status, body
+end
+
+-- Fetch a stream's series by name.
+-- Uses POST /api/Series/... for known dashboard streams, or decodes and uses smart filters.
 -- Returns: array_of_SeriesDto, code, headers, status, raw_body
 function KavitaClient:getStreamSeries(name, params)
     if not name or name == "" then
@@ -284,11 +303,11 @@ function KavitaClient:getStreamSeries(name, params)
         method = "POST"
         path = "/api/Series/on-deck"
         body = filter_v2
-    elseif name == "recently-updated" or name == "recently-updated-series" then
+    elseif name == "recently-updated-series" then
         method = "POST"
         path = "/api/Series/all-v2"
         body = filter_v2
-    elseif name == "newly-added" or name == "recently-added" or name == "recently-added-v2" then
+    elseif name == "recently-added-v2" then
         method = "POST"
         path = "/api/Series/recently-added-v2"
         body = filter_v2
@@ -312,16 +331,32 @@ function KavitaClient:getStreamSeries(name, params)
         }
         -- Allow override from params.filter if provided
         body = (type(params) == "table" and params.filter) or want_to_read_filter
-    else
-        -- Fallback to Stream endpoint
-        method = "GET"
-        path = "/api/Stream/" .. tostring(name)
-        if type(params) == "table" then
-            for k, v in pairs(params) do
-                if query[k] == nil then query[k] = v end
+    elseif name == "smart-filter" then
+        method = "POST"
+        path = "/api/Series/all-v2"
+
+        local smartFilterEncoded = type(params) == "table" and params.smartFilterEncoded
+
+        if smartFilterEncoded and smartFilterEncoded ~= "" then
+            local decoded_filter, decode_code = self:decodeFilter(smartFilterEncoded)
+
+            if decoded_filter and type(decoded_filter) == "table" then
+                body = decoded_filter
+            else
+                logger.warn("KavitaClient:getStreamSeries: failed to decode smart filter, code:", decode_code)
+
+                return nil, decode_code or -1, nil, "failed to decode smart filter", nil
             end
+        else
+            logger.warn("KavitaClient:getStreamSeries: smart filter missing smartFilterEncoded")
+
+            return nil, -1, nil, "smart filter missing smartFilterEncoded", nil
         end
-        if query.visibleOnly == nil then query.visibleOnly = true end
+    else
+        -- Unknown stream name
+        logger.warn("KavitaClient:getStreamSeries: unknown stream name:", name)
+
+        return nil, -1, nil, "unknown stream name", nil
     end
 
     local data, code, headers, status, body_str = self:apiJSONCached(path, {

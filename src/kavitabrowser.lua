@@ -288,28 +288,28 @@ end
 function KavitaBrowser:buildKavitaDashboardItems(dashboard)
     local items = {}
     if type(dashboard) == "table" then
-        for _, d in ipairs(dashboard) do
+        for __, d in ipairs(dashboard) do
+            local stream_type = d.streamType
             local original_name = d.name or ""
-            -- Map to actual API stream names
-            local api_name = original_name
-            if api_name == "recently-updated" then
-                api_name = "recently-updated-series"
-            elseif api_name == "newly-added" or api_name == "recently-added" then
-                api_name = "recently-added-v2"
-            end
+            local api_name
+            local name
 
-            -- Human-readable labels
-            local name = original_name
-            if name == "on-deck" then
-                name = "On Deck"
-            elseif name == "recently-updated" or name == "recently-updated-series" then
-                name = "Recently Updated"
-            elseif name == "newly-added" or name == "recently-added" or name == "recently-added-v2" then
-                name = "Newly Added"
-            elseif name == "want-to-read" then
-                name = "Want to Read"
-            elseif name == "" then
-                name = _("Unnamed")
+            if stream_type == 1 then
+                api_name = "on-deck"
+                name = _("On Deck")
+            elseif stream_type == 2 then
+                api_name = "recently-updated-series"
+                name = _("Recently Updated")
+            elseif stream_type == 3 then
+                api_name = "recently-added-v2"
+                name = _("Newly Added")
+            elseif stream_type == 4 then
+                api_name = "smart-filter"
+                name = original_name ~= "" and original_name or _("Smart Filter")
+            else
+                -- Unknown stream type - use name as-is
+                api_name = original_name
+                name = original_name ~= "" and original_name or _("Unnamed")
             end
 
             local item = {
@@ -671,17 +671,30 @@ function KavitaBrowser:showSeriesDetail(series_name, series_id, library_id, opts
 end
 
 -- Fetch a specific Kavita stream (e.g., on-deck) and display series
-function KavitaBrowser:showKavitaStream(stream_name)
+-- stream_type: optional streamType (1=OnDeck, 2=RecentlyUpdated, 3=NewlyAdded, 4=SmartFilter)
+-- stream_title: optional display title for the stream
+-- smart_filter_encoded: optional smartFilterEncoded for smart filters
+function KavitaBrowser:showKavitaStream(stream_name, stream_type, stream_title, smart_filter_encoded)
     local loading = InfoMessage:new{ text = _("Loading..."), timeout = 0 }
     UIManager:show(loading)
     UIManager:forceRePaint()
 
     -- Determine pagination strategy based on stream type
     local max_pages
-    if stream_name == "on-deck" or stream_name == "want-to-read" then
-        max_pages = nil  -- Fetch all pages for on-deck and want-to-read
+    if stream_type then
+        if stream_type == 1 or stream_type == 4 then
+            -- On Deck (1) and Smart Filter (4): fetch all pages
+            max_pages = nil
+        else
+            -- Recently Updated (2), Newly Added (3): limit to 1 page (50 items)
+            max_pages = 1
+        end
+    elseif stream_name == "want-to-read" then
+        -- Manually added want-to-read: fetch all pages
+        max_pages = nil
     else
-        max_pages = 1  -- Limit to 1 page for all other streams
+        -- Unknown/fallback: limit to 1 page
+        max_pages = 1
     end
 
     -- Fetch all pages until we get less than page_size results or empty results
@@ -691,7 +704,16 @@ function KavitaBrowser:showKavitaStream(stream_name)
     local has_more = true
 
     while has_more do
-        local data, code, __, status = KavitaClient:getStreamSeries(stream_name, { PageNumber = page_num, PageSize = page_size })
+        local params = {
+            PageNumber = page_num,
+            PageSize = page_size,
+        }
+
+        if smart_filter_encoded then
+            params.smartFilterEncoded = smart_filter_encoded
+        end
+
+        local data, code, __, status = KavitaClient:getStreamSeries(stream_name, params)
 
         if not data then
             UIManager:close(loading)
@@ -750,25 +772,39 @@ function KavitaBrowser:showKavitaStream(stream_name)
     -- Remember current stream for back navigation from series detail
     self.current_stream_name = stream_name
 
-    local title = stream_name
-    if stream_name == "on-deck" then
-        title = _("On Deck")
-    elseif stream_name == "recently-updated" or stream_name == "recently-updated-series" then
-        title = _("Recently Updated")
-    elseif stream_name == "newly-added" or stream_name == "recently-added-v2" then
-        title = _("Newly Added")
-    elseif stream_name == "want-to-read" then
-        title = _("Want to Read")
+    -- Determine title from streamType or provided stream_title
+    if not stream_title then
+        if stream_type == 1 then
+            stream_title = _("On Deck")
+        elseif stream_type == 2 then
+            stream_title = _("Recently Updated")
+        elseif stream_type == 3 then
+            stream_title = _("Newly Added")
+        elseif stream_type == 4 then
+            stream_title = _("Smart Filter")
+        elseif stream_name == "want-to-read" then
+            stream_title = _("Want to Read")
+        else
+            stream_title = stream_name
+        end
     end
 
-    self.catalog_title = title
+    self.catalog_title = stream_title
     self.search_url = nil
 
-    -- Push a stream sentinel so back returns to dashboard
+    -- Push stream path so back returns to dashboard
     self.paths = self.paths or {}
+
     local top = self.paths[#self.paths]
+
     if not (top and top.kavita_stream_root == stream_name) then
-        table.insert(self.paths, { kavita_stream_root = stream_name, title = self.catalog_title })
+        table.insert(self.paths, {
+            kavita_stream_root = stream_name,
+            stream_type = stream_type,
+            stream_title = stream_title,
+            smart_filter_encoded = smart_filter_encoded,
+            title = self.catalog_title
+        })
     end
 
     self:switchItemTable(self.catalog_title, items, nil, nil, nil)
@@ -1293,7 +1329,14 @@ function KavitaBrowser:onMenuSelect(item)
             UIManager:show(InfoMessage:new{ text = _("Invalid dashboard item") })
             return true
         end
-        self:showKavitaStream(stream_name)
+
+        self:showKavitaStream(
+            stream_name,
+            item.dashboard and item.dashboard.streamType,
+            item.text,
+            item.dashboard and item.dashboard.smartFilterEncoded
+        )
+
         return true
     end
 
@@ -1728,11 +1771,12 @@ function KavitaBrowser:onReturn()
         self.catalog_author = path.author
         if path.kavita_stream_root then
             -- return to the last stream list
-            if path.kavita_stream_root then
-                self:showKavitaStream(path.kavita_stream_root)
-            else
-                self:init()
-            end
+            self:showKavitaStream(
+                path.kavita_stream_root,
+                path.stream_type,
+                path.stream_title,
+                path.smart_filter_encoded
+            )
         elseif path.kavita_dashboard_root then
             -- return to dashboard for current server
             self:showDashboardAfterSelection(self.current_server_name or self.catalog_title)
