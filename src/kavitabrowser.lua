@@ -4,6 +4,7 @@ local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local Menu = require("ui/widget/menu")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
+local TextViewer = require("ui/widget/textviewer")
 local KavitaClient = require("kavitaclient")
 local UIManager = require("ui/uimanager")
 local ffiUtil = require("ffi/util")
@@ -1350,6 +1351,181 @@ function KavitaBrowser:onMenuSelect(item)
     return true
 end
 
+-- Show series information dialog with metadata
+function KavitaBrowser:showSeriesInfo(series_name, series_id)
+    if not series_id then
+        UIManager:show(InfoMessage:new{ text = _("Series ID not available") })
+        return
+    end
+
+    local loading = InfoMessage:new{ text = _("Loading series info..."), timeout = 0 }
+    UIManager:show(loading)
+    UIManager:forceRePaint()
+
+    local metadata, code, headers, status = KavitaClient:getSeriesMetadata(series_id)
+
+    UIManager:close(loading)
+
+    if not metadata then
+        UIManager:show(InfoMessage:new{ text = _("Failed to load series info") })
+        logger.warn("KavitaBrowser:showSeriesInfo: failed to get metadata", code, status)
+        return
+    end
+
+    -- Helper to wrap text in bold markers
+    local function bold(text)
+        return "\u{FFF2}" .. text .. "\u{FFF3}"
+    end
+
+    -- Helper function to format person arrays
+    local function formatPersons(persons)
+        if not persons or type(persons) ~= "table" or #persons == 0 then
+            return nil
+        end
+        local names = {}
+        for _, p in ipairs(persons) do
+            if type(p) == "table" and p.name then
+                table.insert(names, p.name)
+            elseif type(p) == "string" then
+                table.insert(names, p)
+            end
+        end
+        return #names > 0 and table.concat(names, ", ") or nil
+    end
+
+    -- Helper function to format tag arrays
+    local function formatTags(tags)
+        if not tags or type(tags) ~= "table" or #tags == 0 then
+            return nil
+        end
+        local names = {}
+        for _, t in ipairs(tags) do
+            if type(t) == "table" and t.title then
+                table.insert(names, t.title)
+            elseif type(t) == "string" then
+                table.insert(names, t)
+            end
+        end
+        return #names > 0 and table.concat(names, ", ") or nil
+    end
+
+    local info_parts = {}
+
+    -- Start with PTF header to enable formatting
+    table.insert(info_parts, "\u{FFF1}")
+
+    if metadata.summary and metadata.summary ~= "" then
+        table.insert(info_parts, metadata.summary)
+        table.insert(info_parts, "")
+    end
+
+    local meta_items = {}
+
+    if metadata.publicationStatus then
+        local status_text
+        if metadata.publicationStatus == 0 then
+            status_text = _("Ongoing")
+        elseif metadata.publicationStatus == 1 then
+            status_text = _("Completed")
+        elseif metadata.publicationStatus == 2 then
+            status_text = _("Cancelled")
+        elseif metadata.publicationStatus == 3 then
+            status_text = _("Hiatus")
+        elseif metadata.publicationStatus == 4 then
+            status_text = _("Ended")
+        end
+
+        if status_text then
+            table.insert(meta_items, _("Status: ") .. status_text)
+        end
+    end
+
+    if metadata.releaseYear and metadata.releaseYear > 0 then
+        table.insert(meta_items, _("Year: ") .. tostring(metadata.releaseYear))
+    end
+
+    if #meta_items > 0 then
+        table.insert(info_parts, table.concat(meta_items, " • "))
+        table.insert(info_parts, "")
+    end
+
+    local genres = formatTags(metadata.genres)
+    if genres then
+        table.insert(info_parts, bold(_("Genres:")) .. " " .. genres)
+    end
+
+    local tags = formatTags(metadata.tags)
+    if tags then
+        table.insert(info_parts, bold(_("Tags:")) .. " " .. tags)
+    end
+
+    if genres or tags then
+        table.insert(info_parts, "")
+    end
+
+    local credits = {}
+
+    local writers = formatPersons(metadata.writers)
+    if writers then
+        table.insert(credits, bold(_("Writers:")) .. " " .. writers)
+    end
+
+    local publishers = formatPersons(metadata.publishers)
+    if publishers then
+        table.insert(credits, bold(_("Publishers:")) .. " " .. publishers)
+    end
+
+    local translators = formatPersons(metadata.translators)
+    if translators then
+        table.insert(credits, bold(_("Translators:")) .. " " .. translators)
+    end
+
+    local cover_artists = formatPersons(metadata.coverArtists)
+    if cover_artists then
+        table.insert(credits, bold(_("Cover Art:")) .. " " .. cover_artists)
+    end
+
+    local pencillers = formatPersons(metadata.pencillers)
+    if pencillers then
+        table.insert(credits, bold(_("Pencils:")) .. " " .. pencillers)
+    end
+
+    local inkers = formatPersons(metadata.inkers)
+    if inkers then
+        table.insert(credits, bold(_("Inks:")) .. " " .. inkers)
+    end
+
+    local colorists = formatPersons(metadata.colorists)
+    if colorists then
+        table.insert(credits, bold(_("Colors:")) .. " " .. colorists)
+    end
+
+    local letterers = formatPersons(metadata.letterers)
+    if letterers then
+        table.insert(credits, bold(_("Letters:")) .. " " .. letterers)
+    end
+
+    local editors = formatPersons(metadata.editors)
+    if editors then
+        table.insert(credits, bold(_("Editors:")) .. " " .. editors)
+    end
+
+    if #credits > 0 then
+        for _, credit in ipairs(credits) do
+            table.insert(info_parts, credit)
+        end
+    end
+
+    local info_text = table.concat(info_parts, "\n")
+
+    local text_viewer = TextViewer:new{
+        title = series_name or _("Series Info"),
+        text = info_text,
+        justified = false,
+    }
+    UIManager:show(text_viewer)
+end
+
 -- Menu action on item long-press (dialog Edit / Delete catalog)
 function KavitaBrowser:onMenuHold(item)
     -- Handle series long-press for continue reading
@@ -1407,6 +1583,15 @@ function KavitaBrowser:onMenuHold(item)
                             author = series.author or series.authors or series.writers,
                         }
                         self:showSeriesDetail(item.text, sid, lid)
+                    end,
+                },
+            },
+            {
+                {
+                    text = "\u{F05A} " .. _("Series Info"),
+                    callback = function()
+                        UIManager:close(dialog)
+                        self:showSeriesInfo(item.text, sid)
                     end,
                 },
             },
