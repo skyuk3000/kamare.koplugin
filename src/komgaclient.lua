@@ -1,4 +1,3 @@
-local Cache = require("cache")
 local http = require("socket.http")
 local logger = require("logger")
 local ltn12 = require("ltn12")
@@ -7,8 +6,6 @@ local socketutil = require("socketutil")
 local url = require("socket.url")
 local rapidjson = require("rapidjson")
 local mime = require("mime")
-
-local ApiCache = Cache:new{ slots = 20 }
 
 local KomgaClient = {}
 
@@ -39,20 +36,6 @@ function KomgaClient:_buildQueryString(params)
     return (#parts > 0) and ("?" .. table.concat(parts, "&")) or ""
 end
 
-function KomgaClient:_cacheGet(key, ttl)
-    local ok, cached = pcall(ApiCache.check, ApiCache, key)
-    if ok and cached and cached.timestamp then
-        local age = os.time() - cached.timestamp
-        if age >= 0 and age < (ttl or 120) then
-            return cached.data
-        end
-    end
-end
-
-function KomgaClient:_cachePut(key, data)
-    pcall(ApiCache.insert, ApiCache, key, { data = data, timestamp = os.time() })
-end
-
 function KomgaClient:apiRequest(path, opts)
     opts = opts or {}
     if not self.base_url or self.base_url == "" then
@@ -74,6 +57,15 @@ function KomgaClient:apiRequest(path, opts)
         headers["Content-Type"] = "application/json"
         headers["Content-Length"] = tostring(#payload)
         source = ltn12.source.string(payload)
+    elseif type(opts.body) == "string" then
+        headers["Content-Length"] = tostring(#opts.body)
+        source = ltn12.source.string(opts.body)
+    end
+
+    if type(opts.headers) == "table" then
+        for k, v in pairs(opts.headers) do
+            headers[k] = v
+        end
     end
 
     local sink_tbl = {}
@@ -154,7 +146,15 @@ function KomgaClient:createBookPageTable(book_id, pages)
         __index = function(_, key)
             if type(key) ~= "number" then return nil end
             local page_number = page_numbers[key] or key
-            return self.base_url .. "/api/v1/books/" .. tostring(book_id) .. "/pages/" .. tostring(page_number)
+            local code, _, _, body = self:apiRequest("/api/v1/books/" .. tostring(book_id) .. "/pages/" .. tostring(page_number), {
+                method = "GET",
+                headers = { ["Accept"] = "*/*" },
+                timeout_profile = "file",
+            })
+            if type(code) ~= "number" or code < 200 or code >= 300 then
+                return nil
+            end
+            return body
         end,
     })
     return page_table

@@ -67,7 +67,7 @@ function KavitaBrowser:init()
         self:authenticateAfterSelection(single_server.name, single_server.url)
         self:showDashboardAfterSelection(single_server.name)
 
-        return
+        return false
     end
 
     -- Normal behavior for multiple servers or no servers
@@ -98,7 +98,7 @@ function KavitaBrowser:_applyCoverBrowserEnhancements()
     -- Only apply CoverBrowser enhancements if not in classic mode
     if not display_mode or display_mode == "" then
         logger.warn("Kamare: Classic mode detected, skipping CoverBrowser enhancements")
-        return
+        return false
     end
 
     -- Override methods on this instance (same pattern as CoverBrowser does for History/Collections)
@@ -364,7 +364,7 @@ function KavitaBrowser:showDashboardAfterSelection(server_name)
 
     if not data then
         self:handleCatalogError("dashboard", "/api/Stream/dashboard", status or code)
-        return
+        return false
     end
 
     local items = self:buildKavitaDashboardItems(data)
@@ -403,7 +403,7 @@ function KavitaBrowser:showKavitaSearchDialog()
                         UIManager:close(dialog)
                         if not q or q == "" then
                             UIManager:show(InfoMessage:new{ text = _("Empty search") })
-                            return
+                            return false
                         end
                         self:performKavitaSearch(q)
                     end,
@@ -820,7 +820,7 @@ end
 function KavitaBrowser:persistBearerToken(server_name, server_url, token)
     if not self.kamare_settings then
         logger.warn("KavitaBrowser:persistBearerToken: no settings")
-        return
+        return false
     end
 
     local servers = self.kamare_settings:readSetting("servers", {}) or {}
@@ -864,7 +864,7 @@ end
 function KavitaBrowser:authenticateAfterSelection(server_name, server_url)
     if not self.kamare_settings then
         logger.warn("KavitaBrowser:authenticateAfterSelection: no settings available")
-        return
+        return false
     end
 
     local servers = self.kamare_settings:readSetting("servers", {}) or {}
@@ -878,7 +878,7 @@ function KavitaBrowser:authenticateAfterSelection(server_name, server_url)
     end
     if not entry then
         logger.warn("KavitaBrowser:authenticateAfterSelection: server entry not found", server_name, server_url)
-        return
+        return false
     end
 
     local server_type = entry.server_type or "kavita"
@@ -888,23 +888,25 @@ function KavitaBrowser:authenticateAfterSelection(server_name, server_url)
         local ok, code, __, err = KomgaClient:authenticate(entry.kavita_url or entry.url, entry.username, entry.password)
         if not ok then
             logger.warn("KavitaBrowser:authenticateAfterSelection: Komga authentication failed", code, err)
+            return false
         end
-        return
+        return true
     end
 
     local apiKey = entry.api_key
     local base_url = entry.kavita_url
     if not apiKey or apiKey == "" or not base_url or base_url == "" then
         logger.warn("KavitaBrowser:authenticateAfterSelection: missing api_key or kavita_url")
-        return
+        return false
     end
     local token, code, __, err = KavitaClient:authenticate(base_url, apiKey)
     if not token then
         logger.warn("KavitaBrowser:authenticateAfterSelection: authentication failed", code, err)
-        return
+        return false
     end
     KavitaClient.api_key = apiKey
     self:persistBearerToken(server_name, server_url, token)
+    return true
 end
 
 
@@ -1322,7 +1324,11 @@ function KavitaBrowser:showKomgaLibraries(server_name)
 end
 
 function KavitaBrowser:showKomgaSeries(library)
+    local loading = InfoMessage:new{ text = _("Loading..."), timeout = 0 }
+    UIManager:show(loading)
+    UIManager:forceRePaint()
     local data, code, __, status = KomgaClient:getSeriesByLibrary(library.id)
+    UIManager:close(loading)
     if not data then
         self:handleCatalogError("stream", "/api/v1/series", status or code)
         return
@@ -1341,7 +1347,11 @@ function KavitaBrowser:showKomgaSeries(library)
 end
 
 function KavitaBrowser:showKomgaBooks(series, library)
+    local loading = InfoMessage:new{ text = _("Loading..."), timeout = 0 }
+    UIManager:show(loading)
+    UIManager:forceRePaint()
     local data, code, __, status = KomgaClient:getBooksBySeries(series.id)
+    UIManager:close(loading)
     if not data then
         self:handleCatalogError("series", "/api/v1/books", status or code)
         return
@@ -1360,7 +1370,11 @@ function KavitaBrowser:showKomgaBooks(series, library)
 end
 
 function KavitaBrowser:launchKomgaBookViewer(book, series)
+    local loading = InfoMessage:new{ text = _("Loading..."), timeout = 0 }
+    UIManager:show(loading)
+    UIManager:forceRePaint()
     local pages_data = KomgaClient:getBookPages(book.id)
+    UIManager:close(loading)
     if not pages_data then
         UIManager:show(InfoMessage:new{ text = _("Cannot load book pages") })
         return
@@ -1384,7 +1398,7 @@ function KavitaBrowser:launchKomgaBookViewer(book, series)
         title = (series and series.metadata and series.metadata.title) or _("Manga"),
         metadata = {
             seriesName = (series and series.metadata and series.metadata.title) or (book.metadata and book.metadata.title),
-            author = (book.metadata and book.metadata.authors and book.metadata.authors[1]) or nil,
+            author = (book.metadata and book.metadata.authors and ((type(book.metadata.authors[1]) == "table" and book.metadata.authors[1].name) or book.metadata.authors[1])) or nil,
             startPage = 1,
         },
         preloaded_dimensions = preloaded_dimensions,
@@ -1471,7 +1485,11 @@ function KavitaBrowser:onMenuSelect(item)
     if #self.paths == 0 then -- root list
         self.current_server_name = item.raw_name or item.text
         self.current_server_type = item.server_type or "kavita"
-        self:authenticateAfterSelection(self.current_server_name, item.url)
+        local authed = self:authenticateAfterSelection(self.current_server_name, item.url)
+        if not authed then
+            UIManager:show(InfoMessage:new{ text = _("Authentication failed. Check server settings.") })
+            return true
+        end
         if self.current_server_type == "komga" then
             self:showKomgaLibraries(self.current_server_name)
         else
