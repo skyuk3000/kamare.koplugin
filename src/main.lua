@@ -90,13 +90,13 @@ end
 
 function Kamare:onDispatcherRegisterActions()
     Dispatcher:registerAction("kamare_show_catalog",
-        {category="none", event="ShowKavitaBrowser", title=_("Kavita Manga Reader"), filemanager=true,}
+        {category="none", event="ShowKavitaBrowser", title=_("KaMare Manga Reader"), filemanager=true,}
     )
 end
 
 function Kamare:addToMainMenu(menu_items)
     menu_items.kamare = {
-        text = _("Kavita Manga Reader"),
+        text = _("KaMare Manga Reader"),
         sorting_hint = "search",
         callback = function()
             self:onShowKavitaBrowser()
@@ -108,7 +108,7 @@ function Kamare:onShowKavitaBrowser()
     self.browser = KavitaBrowser:new{
         ui = self.ui,
         servers = self.servers,
-        title = _("Kavita Manga Reader"),
+        title = _("KaMare Manga Reader"),
         is_popout = false,
         is_borderless = true,
         title_bar_fm_style = true,

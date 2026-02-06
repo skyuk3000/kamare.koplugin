@@ -1,14 +1,14 @@
 # Kamare (kamare.koplugin)
 
 **kamare** is a manga reader plugin for [KOReader](https://github.com/koreader/koreader) that 
-connects to [Kavita](https://github.com/Kareadita/Kavita).
+connects to [Kavita](https://github.com/Kareadita/Kavita) and [Komga](https://komga.org/).
 
 This KOReader plugin provides a seamless way to read manga from Kavita without going through OPDS, 
 featuring a custom renderer that also supports long-strip formats commonly used in manhwa.
 
 ## Features
 
-- **Direct Kavita Integration** - Browse your library without OPDS limitations
+- **Direct Kavita/Komga Integration** - Browse your library without OPDS limitations
 - **Multiple Reading Modes** - Page, scroll (long-strip), and dual-page modes
 - **Smart Prefetching** - Fast page turns through caching
 - **Progress Tracking** - Syncs with Kavita and KOReader reading stats
@@ -60,11 +60,13 @@ Tested with Kindle Paperwhite (2nd gen) and Kobo Libra Colour.
 1. Download the latest `kamare.koplugin.zip` from the [releases page](https://github.com/fpammer/kamare.koplugin/releases/latest).
 2. Extract the ZIP and copy the `kamare.koplugin` folder into the `plugins` directory of your KOReader installation.
 3. Restart KOReader to load the plugin.
-4. Open the plugin from the KOReader menu (🔍) and add your Kavita server from the burger menu (top-left).:
+4. Open the plugin from the KOReader menu (🔍) and add a server from the burger menu (top-left).:
 <p align="center">
 <img src="doc/server-setup.png" width="500" alt="Server setup">
 </p>
-5. Enter a server name, URL (with protocol eg. https://kavita.hostname.zone), and Kavita API key
+5. Enter a server name, URL, and credentials:
+   - **Kavita**: set server type to `kavita` and provide API key
+   - **Komga**: set server type to `komga` and provide username/password
 
 ### Getting Your Kavita API Key
 
