@@ -604,8 +604,17 @@ function KavitaBrowser:showSeriesDetail(series_name, series_id, library_id, opts
     end
 
     local items = {}
-    for _, it in ipairs(self:buildKavitaVolumeItems(detail.volumes or {})) do table.insert(items, it) end
-    for _, it in ipairs(self:buildKavitaChapterItems(detail.chapters or {}, "chapter")) do table.insert(items, it) end
+    local has_volumes = type(detail.volumes) == "table" and #detail.volumes > 0
+
+    -- If a series has volumes, treat them as folders and don't mix the same chapters
+    -- into the series-level listing.
+    if has_volumes then
+        for _, it in ipairs(self:buildKavitaVolumeItems(detail.volumes)) do table.insert(items, it) end
+    else
+        for _, it in ipairs(self:buildKavitaChapterItems(detail.chapters or {}, "chapter")) do table.insert(items, it) end
+    end
+
+    -- Specials are not part of numbered volumes and should stay visible at series level.
     for _, it in ipairs(self:buildKavitaChapterItems(detail.specials or {}, "special")) do table.insert(items, it) end
 
     self.catalog_title = series_name or _("Series")
@@ -666,6 +675,31 @@ function KavitaBrowser:showSeriesDetail(series_name, series_id, library_id, opts
     -- Pass -1 to maintain current page when refreshing, nil to reset to page 1
     local itemnumber = refresh_only and -1 or nil
     self:switchItemTable(self.catalog_title, items, itemnumber, nil, self.catalog_author)
+    self:setTitleBarLeftIcon("appbar.menu")
+    self.onLeftButtonTap = function()
+        self:showTitleMenu()
+    end
+end
+
+function KavitaBrowser:showVolumeDetail(volume, series_name)
+    if not volume then return end
+
+    local chapters = type(volume.chapters) == "table" and volume.chapters or {}
+    local items = self:buildKavitaChapterItems(chapters, "chapter")
+    local volume_name = volume.name and volume.name ~= "" and volume.name
+        or (volume.number and ("Volume " .. tostring(volume.number)))
+        or _("Volume")
+
+    -- Push a volume breadcrumb so back returns to the series listing.
+    self.paths = self.paths or {}
+    table.insert(self.paths, {
+        kavita_volume_root = volume.id,
+        title = volume_name,
+    })
+
+    self.catalog_title = volume_name
+    self.catalog_author = series_name
+    self:switchItemTable(self.catalog_title, items, nil, nil, self.catalog_author)
     self:setTitleBarLeftIcon("appbar.menu")
     self.onLeftButtonTap = function()
         self:showTitleMenu()
@@ -994,15 +1028,24 @@ end
 
 -- Saves catalog properties from input dialog
 function KavitaBrowser:editServerFromInput(fields, item)
+    local name = type(fields[1]) == "string" and fields[1]:match("^%s*(.-)%s*$") or ""
+    local raw_url = type(fields[2]) == "string" and fields[2]:match("^%s*(.-)%s*$") or ""
+    local api_key = type(fields[3]) == "string" and fields[3]:match("^%s*(.-)%s*$") or nil
+
+    if raw_url == "" then
+        UIManager:show(InfoMessage:new{ text = _("Server URL cannot be empty") })
+        return
+    end
+
     local server_type = (fields[4] or ""):lower()
     if server_type ~= "komga" then
         server_type = "kavita"
     end
 
     local new_server = {
-        name = fields[1],
-        kavita_url = fields[2]:match("^%a+://") and fields[2] or "http://" .. fields[2],
-        api_key = fields[3] ~= "" and fields[3] or nil,
+        name = name,
+        kavita_url = raw_url:match("^%a+://") and raw_url or "http://" .. raw_url,
+        api_key = api_key ~= "" and api_key or nil,
         server_type = server_type,
         username = fields[5] ~= "" and fields[5] or nil,
         password = fields[6] ~= "" and fields[6] or nil,
@@ -1432,13 +1475,7 @@ function KavitaBrowser:onMenuSelect(item)
     end
 
     if item.kavita_volume and item.volume and item.volume.id then
-        local vol = item.volume
-        local ch = (type(vol.chapters) == "table") and vol.chapters[1] or nil
-        if ch and ch.id then
-            self:launchKavitaChapterViewer(ch, self.catalog_title or self.current_server_name, true)
-        else
-            UIManager:show(InfoMessage:new{ text = _("This volume has no chapters available.") })
-        end
+        self:showVolumeDetail(item.volume, self.catalog_title or self.current_server_name)
         return true
     end
 
