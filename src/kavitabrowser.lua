@@ -1015,10 +1015,19 @@ end
 
 -- Saves catalog properties from input dialog
 function KavitaBrowser:editServerFromInput(fields, item)
+    local name = type(fields[1]) == "string" and fields[1]:match("^%s*(.-)%s*$") or ""
+    local raw_url = type(fields[2]) == "string" and fields[2]:match("^%s*(.-)%s*$") or ""
+    local api_key = type(fields[3]) == "string" and fields[3]:match("^%s*(.-)%s*$") or nil
+
+    if raw_url == "" then
+        UIManager:show(InfoMessage:new{ text = _("Server URL cannot be empty") })
+        return
+    end
+
     local new_server = {
-        name        = fields[1],
-        kavita_url  = fields[2]:match("^%a+://") and fields[2] or "http://" .. fields[2],
-        api_key     = fields[3] ~= "" and fields[3] or nil,
+        name        = name,
+        kavita_url  = raw_url:match("^%a+://") and raw_url or "http://" .. raw_url,
+        api_key     = api_key ~= "" and api_key or nil,
     }
     local new_item = buildRootEntry(new_server)
     local new_idx, itemnumber
