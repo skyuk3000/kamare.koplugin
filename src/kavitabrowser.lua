@@ -24,6 +24,48 @@ local function progress_icon(read, total)
     return "◔"                      -- >0%–<=25%
 end
 
+local function normalize_format(value)
+    if not value then return nil end
+    local fmt = tostring(value):lower():gsub("^%s*(.-)%s*$", "%1")
+    fmt = fmt:gsub("^%.", "")
+    if fmt:find("pdf") then return "pdf" end
+    if fmt:find("epub") then return "epub" end
+    return nil
+end
+
+local function detectChapterFormat(chapter)
+    if not chapter or type(chapter) ~= "table" then return nil end
+    local candidates = {
+        chapter.format,
+        chapter.fileExtension,
+        chapter.file_extension,
+        chapter.fileType,
+        chapter.file_type,
+        chapter.extension,
+    }
+
+    if type(chapter.files) == "table" then
+        for _, f in ipairs(chapter.files) do
+            if type(f) == "table" then
+                table.insert(candidates, f.extension)
+                table.insert(candidates, f.fileExtension)
+                table.insert(candidates, f.format)
+                table.insert(candidates, f.fileType)
+                table.insert(candidates, f.type)
+            end
+        end
+    end
+
+    for _, candidate in ipairs(candidates) do
+        local fmt = normalize_format(candidate)
+        if fmt then
+            return fmt
+        end
+    end
+
+    return nil
+end
+
 
 local KavitaBrowser = Menu:extend{
     title_shrink_font_to_fit = true,
@@ -936,6 +978,8 @@ function KavitaBrowser:authenticateAfterSelection(server_name, server_url)
     -- Keep client api_key for endpoints that require it as query param
     KavitaClient.api_key = apiKey
 
+    self.current_server_url = base_url
+
     self:persistBearerToken(server_name, server_url, token)
 end
 
@@ -1092,20 +1136,53 @@ end
 function KavitaBrowser:launchKavitaChapterViewer(chapter, series_name, is_volume, override_view_mode)
     if not chapter or not chapter.id then return end
 
-    local pages = chapter.pages or (chapter.files and #chapter.files) or 0
-    if pages <= 0 then
-        local message = is_volume and _("This volume has no pages to display") or _("This chapter has no pages to display")
-        UIManager:show(InfoMessage:new{ text = message })
-        return
-    end
-
     -- Show loading indicator
     local loading = InfoMessage:new{ text = _("Loading..."), timeout = 0 }
     UIManager:show(loading)
     UIManager:forceRePaint()
 
+    local pages = chapter.pages or (chapter.files and #chapter.files) or 0
+    local file_format = detectChapterFormat(chapter)
+    local extract_pdf = (file_format == "pdf" or file_format == "epub")
+    local preloaded_dimensions
+
+    if pages <= 0 or extract_pdf then
+        local dims, code = KavitaClient:getFileDimensions(chapter.id, extract_pdf)
+        if type(code) == "number" and code >= 200 and code < 300 and type(dims) == "table" then
+            -- Convert possible 0-based page indices to 1-based for the viewer
+            local zero_based = false
+            for _, d in ipairs(dims) do
+                local pn = d.pageNumber or d.page or d.page_num
+                if type(pn) == "number" and pn == 0 then
+                    zero_based = true
+                    break
+                end
+            end
+            if zero_based then
+                for _, d in ipairs(dims) do
+                    if type(d.pageNumber) == "number" then d.pageNumber = d.pageNumber + 1 end
+                    if type(d.page) == "number" then d.page = d.page + 1 end
+                    if type(d.page_num) == "number" then d.page_num = d.page_num + 1 end
+                end
+            end
+            preloaded_dimensions = dims
+            if pages <= 0 then
+                pages = #dims
+            end
+        else
+            logger.warn("KavitaBrowser: getFileDimensions failed:", code)
+        end
+    end
+
+    if pages <= 0 then
+        local message = is_volume and _("This volume has no pages to display") or _("This chapter has no pages to display")
+        UIManager:show(InfoMessage:new{ text = message })
+        UIManager:close(loading)
+        return
+    end
+
     -- Make sure client has bearer/base_url/api_key (authenticateAfterSelection sets those)
-    local page_table = KavitaClient:streamChapter(chapter.id)
+    local page_table = KavitaClient:streamChapter(chapter.id, { extract_pdf = extract_pdf })
 
     -- Keep lazy 1-based images list; client converts to 0-based for API
     local images_list_data = page_table
@@ -1177,6 +1254,7 @@ function KavitaBrowser:launchKavitaChapterViewer(chapter, series_name, is_volume
         libraryId     = self.current_series_library_id,
         volumeId      = chapter.volumeId,
         chapterId     = chapter.id,
+        server_url    = self.current_server_url,
 
         -- Keep raw chapter for any further needs
         chapter       = chapter,
@@ -1185,34 +1263,9 @@ function KavitaBrowser:launchKavitaChapterViewer(chapter, series_name, is_volume
         startPage     = start_page,
 
         content_type  = content_type,
+        file_format   = file_format,
+        extract_pdf   = extract_pdf,
     }
-
-
-    local preloaded_dimensions
-    do
-        local dims, code = KavitaClient:getFileDimensions(chapter.id)
-        if type(code) == "number" and code >= 200 and code < 300 and type(dims) == "table" then
-            -- Convert possible 0-based page indices to 1-based for the viewer
-            local zero_based = false
-            for _, d in ipairs(dims) do
-                local pn = d.pageNumber or d.page or d.page_num
-                if type(pn) == "number" and pn == 0 then
-                    zero_based = true
-                    break
-                end
-            end
-            if zero_based then
-                for _, d in ipairs(dims) do
-                    if type(d.pageNumber) == "number" then d.pageNumber = d.pageNumber + 1 end
-                    if type(d.page) == "number" then d.page = d.page + 1 end
-                    if type(d.page_num) == "number" then d.page_num = d.page_num + 1 end
-                end
-            end
-            preloaded_dimensions = dims
-        else
-            logger.warn("KavitaBrowser: getFileDimensions failed:", code)
-        end
-    end
 
     local preloaded_iswide = {}
     if type(preloaded_dimensions) == "table" then

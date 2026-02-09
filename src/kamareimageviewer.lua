@@ -20,6 +20,7 @@ local Geom = require("ui/geometry")
 local VirtualImageDocument = require("virtualimagedocument")
 local VirtualPageCanvas = require("virtualpagecanvas")
 local KavitaClient = require("kavitaclient")
+local ProgressQueue = require("kamareprogress")
 local Math = require("optmath")
 local ButtonDialog = require("ui/widget/buttondialog")
 local VIDCache = require("virtualimagedocumentcache")
@@ -1977,9 +1978,12 @@ function KamareImageViewer:_postViewProgress()
     if self.last_posted_page == page_to_post and not (at_end or on_last_page) then return end
 
     UIManager:nextTick(function()
-        pcall(function()
-            KavitaClient:postReaderProgressForPage(self.metadata, page_to_post)
+        local ok, code = pcall(function()
+            return KavitaClient:postReaderProgressForPage(self.metadata, page_to_post)
         end)
+        if not ok or type(code) ~= "number" or code < 200 or code >= 300 then
+            ProgressQueue:queueProgress(self.kamare_settings, self.metadata, page_to_post)
+        end
     end)
     self.last_posted_page = page_to_post
 end

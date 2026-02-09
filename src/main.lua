@@ -6,6 +6,7 @@ local LuaSettings = require("luasettings")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local NetworkMgr = require("ui/network/manager")
+local ProgressQueue = require("kamareprogress")
 local _ = require("gettext")
 
 local Kamare = WidgetContainer:extend{
@@ -28,6 +29,10 @@ function Kamare:init()
         logger.info("Kamare: first run, initializing settings")
     end
     self.servers = self.kamare_settings:readSetting("servers", {})
+
+    NetworkMgr:runWhenConnected(function()
+        ProgressQueue:syncPending(self.kamare_settings)
+    end)
 
     -- Try to load CoverBrowser modules
     self:loadCoverBrowserModules()
@@ -146,6 +151,7 @@ function Kamare:onResume()
         NetworkMgr:runWhenConnected(function()
             -- WiFi is connected now
             logger.dbg("Kamare: WiFi connected on resume, ready for streaming")
+            ProgressQueue:syncPending(self.kamare_settings)
         end)
     end
 end

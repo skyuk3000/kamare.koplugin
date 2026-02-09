@@ -7,6 +7,7 @@ local socketutil = require("socketutil")
 local url = require("socket.url")
 local rapidjson = require("rapidjson")
 local md5 = require("ffi/sha2").md5
+local OfflineCache = require("kamareofflinecache")
 
 local ApiCache = Cache:new{
     slots = 20,
@@ -385,14 +386,14 @@ end
 
 -- Returns the file dimensions for all pages in a chapter.
 -- GET /api/Reader/file-dimensions?chapterId={id}&extractPdf=false[&apiKey=...]
-function KavitaClient:getFileDimensions(chapter_id)
+function KavitaClient:getFileDimensions(chapter_id, extract_pdf)
     if not chapter_id then
         logger.warn("KavitaClient:getFileDimensions: chapter_id is required")
         return nil, -1, nil, "chapterId required", nil
     end
     local query = {
         chapterId  = chapter_id,
-        extractPdf = false,
+        extractPdf = extract_pdf and true or false,
     }
     if self.api_key and self.api_key ~= "" then
         query.apiKey = self.api_key
@@ -408,6 +409,8 @@ end
 -- Creates a page table for Kavita Reader images
 function KavitaClient:createReaderPageTable(chapter_id, ctx)
     local page_table = { image_disposable = true }
+    ctx = ctx or {}
+    local extract_pdf = ctx.extract_pdf and true or false
 
     setmetatable(page_table, { __index = function(_, key)
         if type(key) ~= "number" then
@@ -417,11 +420,16 @@ function KavitaClient:createReaderPageTable(chapter_id, ctx)
         local page1 = key
         local page0 = math.max(0, (page1 or 1) - 1)
 
+        local cached = OfflineCache:readPage(self.base_url, chapter_id, page0, extract_pdf)
+        if cached then
+            return cached
+        end
+
         -- Build query
         local query = {
             chapterId  = chapter_id,
             page       = page0,
-            extractPdf = "false",
+            extractPdf = extract_pdf and "true" or "false",
         }
         -- Some deployments require apiKey as query param in addition to Bearer
         if self.api_key and self.api_key ~= "" then
@@ -440,6 +448,7 @@ function KavitaClient:createReaderPageTable(chapter_id, ctx)
         end
 
         -- No reading progress side-effects here; handled by viewer when page is shown
+        OfflineCache:writePage(self.base_url, chapter_id, page0, extract_pdf, body_str)
         return body_str
     end })
 
@@ -447,8 +456,8 @@ function KavitaClient:createReaderPageTable(chapter_id, ctx)
 end
 
 -- Convenience wrapper to return page table
-function KavitaClient:streamChapter(chapter_id)
-    local page_table = self:createReaderPageTable(chapter_id)
+function KavitaClient:streamChapter(chapter_id, ctx)
+    local page_table = self:createReaderPageTable(chapter_id, ctx)
     return page_table
 end
 
