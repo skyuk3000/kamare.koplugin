@@ -3,23 +3,36 @@ local logger = require("logger")
 local md5 = require("ffi/sha2").md5
 
 local lfs
+local has_mkdir_p = true
 do
     local ok, module = pcall(require, "lfs")
     if ok then
         lfs = module
     else
-        logger.warn("OfflineCache: lfs unavailable, disabling disk cache:", module)
+        logger.warn("OfflineCache: lfs unavailable, falling back to mkdir -p:", module)
+        local ok_exec = pcall(function()
+            return os.execute("mkdir -p /tmp") ~= nil
+        end)
+        if not ok_exec then
+            has_mkdir_p = false
+            logger.warn("OfflineCache: mkdir -p unavailable, disabling disk cache")
+        end
     end
 end
 
 local OfflineCache = {}
 
 local function ensureDir(path)
-    if not lfs then
+    if not lfs and not has_mkdir_p then
         return false
     end
     if not path or path == "" then
         return false
+    end
+    if not lfs then
+        local quoted = path:gsub("'", "'\\''")
+        local ok = os.execute("mkdir -p '" .. quoted .. "'")
+        return ok == true or ok == 0
     end
     local normalized = path:gsub("/+$", "")
     local current = ""
@@ -62,9 +75,6 @@ local function getChapterDir(server_url, chapter_id, extract_pdf)
 end
 
 function OfflineCache:getPagePath(server_url, chapter_id, page0, extract_pdf)
-    if not lfs then
-        return nil
-    end
     if not chapter_id or page0 == nil then
         return nil
     end
