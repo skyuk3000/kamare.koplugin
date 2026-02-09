@@ -1,11 +1,23 @@
 local DataStorage = require("datastorage")
 local logger = require("logger")
-local lfs = require("lfs")
 local md5 = require("ffi/sha2").md5
+
+local lfs
+do
+    local ok, module = pcall(require, "lfs")
+    if ok then
+        lfs = module
+    else
+        logger.warn("OfflineCache: lfs unavailable, disabling disk cache:", module)
+    end
+end
 
 local OfflineCache = {}
 
 local function ensureDir(path)
+    if not lfs then
+        return false
+    end
     if not path or path == "" then
         return false
     end
@@ -50,6 +62,9 @@ local function getChapterDir(server_url, chapter_id, extract_pdf)
 end
 
 function OfflineCache:getPagePath(server_url, chapter_id, page0, extract_pdf)
+    if not lfs then
+        return nil
+    end
     if not chapter_id or page0 == nil then
         return nil
     end
