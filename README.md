@@ -1,6 +1,6 @@
 # Kamare (kamare.koplugin)
 
-**kamare** is a manga reader plugin for [KOReader](https://github.com/koreader/koreader) that 
+**kamare** (originally created by [fpammer](https://github.com/fpammer)) is a manga reader plugin for [KOReader](https://github.com/koreader/koreader) that 
 connects to [Kavita](https://github.com/Kareadita/Kavita) and [Komga](https://komga.org/).
 
 This KOReader plugin provides a seamless way to read manga from Kavita without going through OPDS, 
@@ -57,7 +57,7 @@ Tested with Kindle Paperwhite (2nd gen) and Kobo Libra Colour.
 
 ## Installation & Setup
 
-1. Download the latest `kamare.koplugin.zip` from the [releases page](https://github.com/fpammer/kamare.koplugin/releases/latest).
+1. Download the latest `kamare.koplugin.zip` from the [releases page](https://github.com/skyuk3000/kamare.koplugin/releases/latest).
 2. Extract the ZIP and copy the `kamare.koplugin` folder into the `plugins` directory of your KOReader installation.
 3. Restart KOReader to load the plugin.
 4. Open the plugin from the KOReader menu (🔍) and add a server from the burger menu (top-left).:
