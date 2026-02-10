@@ -6,6 +6,7 @@ local Menu = require("ui/widget/menu")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
 local TextViewer = require("ui/widget/textviewer")
 local KavitaClient = require("kavitaclient")
+local KomgaClient = require("komgaclient")
 local UIManager = require("ui/uimanager")
 local ffiUtil = require("ffi/util")
 local logger = require("logger")
@@ -66,7 +67,7 @@ function KavitaBrowser:init()
         self:authenticateAfterSelection(single_server.name, single_server.url)
         self:showDashboardAfterSelection(single_server.name)
 
-        return
+        return false
     end
 
     -- Normal behavior for multiple servers or no servers
@@ -97,7 +98,7 @@ function KavitaBrowser:_applyCoverBrowserEnhancements()
     -- Only apply CoverBrowser enhancements if not in classic mode
     if not display_mode or display_mode == "" then
         logger.warn("Kamare: Classic mode detected, skipping CoverBrowser enhancements")
-        return
+        return false
     end
 
     -- Override methods on this instance (same pattern as CoverBrowser does for History/Collections)
@@ -267,7 +268,7 @@ function KavitaBrowser:showTitleMenu()
     end
 
     table.insert(buttons, {{
-        text = _("Add Kavita server"),
+        text = _("Add server"),
         callback = function()
             UIManager:close(dialog)
             self:addEditServer(nil, false)
@@ -363,7 +364,7 @@ function KavitaBrowser:showDashboardAfterSelection(server_name)
 
     if not data then
         self:handleCatalogError("dashboard", "/api/Stream/dashboard", status or code)
-        return
+        return false
     end
 
     local items = self:buildKavitaDashboardItems(data)
@@ -402,7 +403,7 @@ function KavitaBrowser:showKavitaSearchDialog()
                         UIManager:close(dialog)
                         if not q or q == "" then
                             UIManager:show(InfoMessage:new{ text = _("Empty search") })
-                            return
+                            return false
                         end
                         self:performKavitaSearch(q)
                     end,
@@ -853,7 +854,7 @@ end
 function KavitaBrowser:persistBearerToken(server_name, server_url, token)
     if not self.kamare_settings then
         logger.warn("KavitaBrowser:persistBearerToken: no settings")
-        return
+        return false
     end
 
     local servers = self.kamare_settings:readSetting("servers", {}) or {}
@@ -897,54 +898,65 @@ end
 function KavitaBrowser:authenticateAfterSelection(server_name, server_url)
     if not self.kamare_settings then
         logger.warn("KavitaBrowser:authenticateAfterSelection: no settings available")
-        return
+        return false
     end
 
     local servers = self.kamare_settings:readSetting("servers", {}) or {}
-
-    -- Always (re)authenticate after selection to ensure fresh token
-
-    -- Find matching server entry
     local entry
-    for i, s in ipairs(servers) do
-        if type(s) == "table" and (s.url == server_url or s.name == server_name) then
+    for _, s in ipairs(servers) do
+        local s_url = s.kavita_url or s.url
+        if type(s) == "table" and (s_url == server_url or s.name == server_name) then
             entry = s
             break
         end
     end
     if not entry then
         logger.warn("KavitaBrowser:authenticateAfterSelection: server entry not found", server_name, server_url)
-        return
+        return false
     end
 
-    -- Resolve API key and base server URL (no fallbacks)
+    local server_type = entry.server_type or "kavita"
+    self.current_server_type = server_type
+
+    if server_type == "komga" then
+        local ok, code, __, err = KomgaClient:authenticate(entry.kavita_url or entry.url, entry.username, entry.password)
+        if not ok then
+            logger.warn("KavitaBrowser:authenticateAfterSelection: Komga authentication failed", code, err)
+            return false
+        end
+        return true
+    end
+
     local apiKey = entry.api_key
     local base_url = entry.kavita_url
-
     if not apiKey or apiKey == "" or not base_url or base_url == "" then
         logger.warn("KavitaBrowser:authenticateAfterSelection: missing api_key or kavita_url")
-        return
+        return false
     end
-
-    -- Authenticate and persist bearer token
     local token, code, __, err = KavitaClient:authenticate(base_url, apiKey)
     if not token then
         logger.warn("KavitaBrowser:authenticateAfterSelection: authentication failed", code, err)
-        return
+        return false
     end
-
-    -- Keep client api_key for endpoints that require it as query param
     KavitaClient.api_key = apiKey
-
     self:persistBearerToken(server_name, server_url, token)
+    return true
 end
 
 
 local function buildRootEntry(server)
+    local base_url = server.kavita_url or server.url
+    local server_type = server.server_type or "kavita"
+    local label = server.name
+    if server_type == "komga" then
+        label = string.format("%s [Komga]", server.name or "Komga")
+    end
     return {
-        text       = server.name,
-        url        = server.kavita_url,
-        searchable = server.kavita_url and server.kavita_url:match("%%s") and true or false,
+        text = label,
+        raw_name = server.name,
+        url = base_url,
+        server_type = server_type,
+        searchable = base_url and base_url:match("%%s") and true or false,
     }
 end
 
@@ -959,75 +971,149 @@ function KavitaBrowser:genItemTableFromRoot()
     return item_table
 end
 
--- Shows dialog to edit properties of the new/existing catalog
-function KavitaBrowser:addEditServer(item, is_edit)
-    if is_edit == nil then is_edit = item ~= nil end
-    local fields = {
+function KavitaBrowser:showServerTypeDialog(current_type, on_select)
+    local dialog
+    local buttons = {
         {
-            hint = _("Server name"),
+            text = _("Kavita"),
+            callback = function()
+                UIManager:close(dialog)
+                if on_select then on_select("kavita") end
+            end,
         },
         {
-            hint = _("Server URL"),
-        },
-        {
-            hint = _("API key"),
+            text = _("Komga"),
+            callback = function()
+                UIManager:close(dialog)
+                if on_select then on_select("komga") end
+            end,
         },
     }
-    local title
-    if is_edit then
-        title = _("Edit Kavita server")
-        fields[1].text = item.text
-        fields[2].text = item.url
-        fields[3].text = (self.servers and self.servers[item.idx] and self.servers[item.idx].api_key) or nil
+
+    dialog = ButtonDialog:new{
+        title = _("Server type"),
+        buttons = { buttons },
+    }
+    UIManager:show(dialog)
+end
+
+function KavitaBrowser:showServerForm(server_type, item, is_edit)
+    server_type = server_type or "kavita"
+    if is_edit == nil then is_edit = item ~= nil end
+    local fields
+    if server_type == "komga" then
+        fields = {
+            { hint = _("Server name") },
+            { hint = _("Server URL") },
+            { hint = _("Username (Komga)") },
+            { hint = _("Password (Komga)") },
+        }
     else
-        title = _("Add Kavita server")
+        fields = {
+            { hint = _("Server name") },
+            { hint = _("Server URL") },
+            { hint = _("API key (Kavita)") },
+        }
+    end
+
+    local title = is_edit and _("Edit server") or _("Add server")
+    if is_edit then
+        local original = self.servers and self.servers[item.idx] or {}
+        fields[1].text = original.name or item.raw_name or item.text
+        fields[2].text = original.kavita_url or original.url or item.url
+        if server_type == "komga" then
+            fields[3].text = original.username or nil
+            fields[4].text = original.password or nil
+        else
+            fields[3].text = original.api_key or nil
+        end
     end
 
     local button_text = is_edit and _("Save") or _("Add")
     local dialog
+    local buttons = {
+        {
+            {
+                text = _("Cancel"),
+                id = "close",
+                callback = function()
+                    UIManager:close(dialog)
+                end,
+            },
+            {
+                text = _("Switch type"),
+                callback = function()
+                    UIManager:close(dialog)
+                    local next_type = server_type == "komga" and "kavita" or "komga"
+                    self:showServerForm(next_type, item, is_edit)
+                end,
+            },
+            {
+                text = button_text,
+                callback = function()
+                    local new_fields = dialog:getFields()
+                    self:editServerFromInput(new_fields, item, server_type)
+                    UIManager:close(dialog)
+                end,
+            },
+        },
+    }
+
     dialog = MultiInputDialog:new{
         title = title,
         fields = fields,
-        buttons = {
-            {
-                {
-                    text = _("Cancel"),
-                    id = "close",
-                    callback = function()
-                        UIManager:close(dialog)
-                    end,
-                },
-                {
-                    text = button_text,
-                    callback = function()
-                        local new_fields = dialog:getFields()
-                        self:editServerFromInput(new_fields, item)
-                        UIManager:close(dialog)
-                    end,
-                },
-            },
-        },
+        buttons = buttons,
     }
     UIManager:show(dialog)
     dialog:onShowKeyboard()
 end
 
+-- Shows dialog to edit properties of the new/existing catalog
+function KavitaBrowser:addEditServer(item, is_edit)
+    if is_edit == nil then is_edit = item ~= nil end
+    if is_edit then
+        local original = self.servers and self.servers[item.idx] or {}
+        local server_type = original.server_type or "kavita"
+        self:showServerForm(server_type, item, true)
+        return
+    end
 
--- Saves catalog properties from input dialog
-function KavitaBrowser:editServerFromInput(fields, item)
+    self:showServerTypeDialog(nil, function(server_type)
+        self:showServerForm(server_type, item, false)
+    end)
+end
+
+
+function KavitaBrowser:editServerFromInput(fields, item, server_type)
+    server_type = server_type or "kavita"
+    if server_type ~= "komga" then
+        server_type = "kavita"
+    end
+
     local name = type(fields[1]) == "string" and fields[1]:match("^%s*(.-)%s*$") or ""
     local raw_url = type(fields[2]) == "string" and fields[2]:match("^%s*(.-)%s*$") or ""
-    local api_key = type(fields[3]) == "string" and fields[3]:match("^%s*(.-)%s*$") or nil
-
     if raw_url == "" then
         UIManager:show(InfoMessage:new{ text = _("Server URL cannot be empty") })
         return
     end
 
+    local api_key
+    local username
+    local password
+    if server_type == "komga" then
+        username = fields[3] ~= "" and fields[3] or nil
+        password = fields[4] ~= "" and fields[4] or nil
+    else
+        api_key = fields[3] ~= "" and fields[3] or nil
+    end
+
     local new_server = {
-        name        = name,
-        kavita_url  = raw_url:match("^%a+://") and raw_url or "http://" .. raw_url,
-        api_key     = api_key ~= "" and api_key or nil,
+        name = name,
+        kavita_url = raw_url:match("^%a+://") and raw_url or "http://" .. raw_url,
+        api_key = api_key,
+        server_type = server_type,
+        username = username,
+        password = password,
     }
     local new_item = buildRootEntry(new_server)
     local new_idx, itemnumber
@@ -1325,9 +1411,129 @@ function KavitaBrowser:launchKavitaChapterViewer(chapter, series_name, is_volume
     return viewer
 end
 
+function KavitaBrowser:showKomgaLibraries(server_name)
+    local loading = InfoMessage:new{ text = _("Loading..."), timeout = 0 }
+    UIManager:show(loading)
+    UIManager:forceRePaint()
+    local data, code, __, status = KomgaClient:getLibraries()
+    UIManager:close(loading)
+    if not data then
+        self:handleCatalogError("dashboard", "/api/v1/libraries", status or code)
+        return
+    end
+    local libs = data.content or data
+    local items = {}
+    for _, lib in ipairs(libs or {}) do
+        table.insert(items, { text = lib.name or _("Library"), komga_library = true, library = lib })
+    end
+    self.catalog_title = server_name
+    self.paths = { { komga_root = true, title = server_name } }
+    self:switchItemTable(self.catalog_title, items, nil, nil, nil)
+end
+
+function KavitaBrowser:showKomgaSeries(library)
+    local loading = InfoMessage:new{ text = _("Loading..."), timeout = 0 }
+    UIManager:show(loading)
+    UIManager:forceRePaint()
+    local data, code, __, status = KomgaClient:getSeriesByLibrary(library.id)
+    UIManager:close(loading)
+    if not data then
+        self:handleCatalogError("stream", "/api/v1/series", status or code)
+        return
+    end
+    local items = {}
+    for _, s in ipairs(data.content or {}) do
+        local title = (s.metadata and s.metadata.title) or s.name or _("Series")
+        table.insert(items, { text = title, komga_series = true, series = s, library = library })
+    end
+    local top = self.paths and self.paths[#self.paths]
+    if not (top and top.komga_library and top.komga_library.id == library.id) then
+        table.insert(self.paths, { komga_library = library })
+    end
+    self.catalog_title = library.name or _("Library")
+    self:switchItemTable(self.catalog_title, items, nil, nil, nil)
+end
+
+function KavitaBrowser:showKomgaBooks(series, library)
+    local loading = InfoMessage:new{ text = _("Loading..."), timeout = 0 }
+    UIManager:show(loading)
+    UIManager:forceRePaint()
+    local data, code, __, status = KomgaClient:getBooksBySeries(series.id)
+    UIManager:close(loading)
+    if not data then
+        self:handleCatalogError("series", "/api/v1/books", status or code)
+        return
+    end
+    local items = {}
+    for _, b in ipairs(data.content or {}) do
+        local t = (b.metadata and (b.metadata.title or b.metadata.number)) or _("Book")
+        table.insert(items, { text = tostring(t), komga_book = true, book = b, series = series, library = library })
+    end
+    local top = self.paths and self.paths[#self.paths]
+    if not (top and top.komga_series and top.komga_series.id == series.id) then
+        table.insert(self.paths, { komga_series = series, komga_library = library })
+    end
+    self.catalog_title = (series.metadata and series.metadata.title) or series.name or _("Series")
+    self:switchItemTable(self.catalog_title, items, nil, nil, nil)
+end
+
+function KavitaBrowser:launchKomgaBookViewer(book, series)
+    local loading = InfoMessage:new{ text = _("Loading..."), timeout = 0 }
+    UIManager:show(loading)
+    UIManager:forceRePaint()
+    local pages_data = KomgaClient:getBookPages(book.id)
+    UIManager:close(loading)
+    if not pages_data then
+        UIManager:show(InfoMessage:new{ text = _("Cannot load book pages") })
+        return
+    end
+    local pages = pages_data.content or {}
+    if #pages == 0 then
+        UIManager:show(InfoMessage:new{ text = _("This book has no pages") })
+        return
+    end
+    local page_table = KomgaClient:createBookPageTable(book.id, pages)
+    local preloaded_dimensions = {}
+    for _, p in ipairs(pages) do
+        if p.number and p.dimension and p.dimension.width and p.dimension.height then
+            table.insert(preloaded_dimensions, { pageNumber = p.number, width = p.dimension.width, height = p.dimension.height })
+        end
+    end
+    local viewer = KamareImageViewer:new{
+        ui = self.ui,
+        images_list_data = page_table,
+        images_list_nb = #pages,
+        title = (series and series.metadata and series.metadata.title) or _("Manga"),
+        metadata = {
+            seriesName = (series and series.metadata and series.metadata.title) or (book.metadata and book.metadata.title),
+            author = (book.metadata and book.metadata.authors and ((type(book.metadata.authors[1]) == "table" and book.metadata.authors[1].name) or book.metadata.authors[1])) or nil,
+            startPage = 1,
+        },
+        preloaded_dimensions = preloaded_dimensions,
+        fullscreen = true,
+        with_title_bar = false,
+        kamare_settings = self.kamare_settings,
+    }
+    UIManager:show(viewer)
+end
+
 -- Menu action on item tap (Stream a book / Show subcatalog / Search in catalog)
 function KavitaBrowser:onMenuSelect(item)
-    -- Only Kavita items are supported
+    if item.komga_library and item.library then
+        self:showKomgaSeries(item.library)
+        return true
+    end
+
+    if item.komga_series and item.series then
+        self:showKomgaBooks(item.series, item.library)
+        return true
+    end
+
+    if item.komga_book and item.book then
+        self:launchKomgaBookViewer(item.book, item.series)
+        return true
+    end
+
     if item.kavita_chapter and item.chapter and item.chapter.id then
         self:launchKavitaChapterViewer(item.chapter, self.catalog_title or self.current_server_name, false)
         return true
@@ -1379,9 +1585,18 @@ function KavitaBrowser:onMenuSelect(item)
     end
 
     if #self.paths == 0 then -- root list
-        self.current_server_name    = item.text
-        self:authenticateAfterSelection(item.text, item.url)
-        self:showDashboardAfterSelection(item.text)
+        self.current_server_name = item.raw_name or item.text
+        self.current_server_type = item.server_type or "kavita"
+        local authed = self:authenticateAfterSelection(self.current_server_name, item.url)
+        if not authed then
+            UIManager:show(InfoMessage:new{ text = _("Authentication failed. Check server settings.") })
+            return true
+        end
+        if self.current_server_type == "komga" then
+            self:showKomgaLibraries(self.current_server_name)
+        else
+            self:showDashboardAfterSelection(self.current_server_name)
+        end
         return true
     end
 
@@ -1956,7 +2171,7 @@ function KavitaBrowser:onMenuHold(item)
                     text = _("Delete"),
                     callback = function()
                         UIManager:show(ConfirmBox:new{
-                            text = _("Delete Kavita server?"),
+                            text = _("Delete server?"),
                             ok_text = _("Delete"),
                             ok_callback = function()
                                 UIManager:close(dialog)
@@ -2002,6 +2217,12 @@ function KavitaBrowser:onReturn()
         elseif path.kavita_dashboard_root then
             -- return to dashboard for current server
             self:showDashboardAfterSelection(self.current_server_name or self.catalog_title)
+        elseif path.komga_series and path.komga_library then
+            self:showKomgaBooks(path.komga_series, path.komga_library)
+        elseif path.komga_library then
+            self:showKomgaSeries(path.komga_library)
+        elseif path.komga_root then
+            self:showKomgaLibraries(self.current_server_name or self.catalog_title)
         else
             self:init()
         end
