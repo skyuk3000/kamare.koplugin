@@ -666,10 +666,18 @@ function KavitaBrowser:showSeriesDetail(series_name, series_id, library_id, opts
     end
 
     local refresh_only = opts and opts.refresh_only
-    -- Push a sentinel so back returns to the stream list (skip when refreshing)
+    -- Push series breadcrumb so back from a volume returns to this series
+    -- (skip when refreshing an already-open series view).
     if not refresh_only then
         self.paths = self.paths or {}
-        table.insert(self.paths, { kavita_stream_root = self.current_stream_name, title = self.catalog_title })
+        table.insert(self.paths, {
+            kavita_series_root = true,
+            series_id = series_id,
+            library_id = library_id,
+            series_name = self.catalog_title,
+            title = self.catalog_title,
+            author = self.catalog_author,
+        })
     end
 
     -- Pass -1 to maintain current page when refreshing, nil to reset to page 1
@@ -2206,7 +2214,10 @@ function KavitaBrowser:onReturn()
     if path then
         self.catalog_title = path.title
         self.catalog_author = path.author
-        if path.kavita_stream_root then
+        if path.kavita_series_root and path.series_id then
+            -- Return to series listing from a volume view.
+            self:showSeriesDetail(path.series_name, path.series_id, path.library_id, { refresh_only = true })
+        elseif path.kavita_stream_root then
             -- return to the last stream list
             self:showKavitaStream(
                 path.kavita_stream_root,
