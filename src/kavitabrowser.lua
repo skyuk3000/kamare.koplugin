@@ -603,8 +603,17 @@ function KavitaBrowser:showSeriesDetail(series_name, series_id, library_id, opts
     end
 
     local items = {}
-    for _, it in ipairs(self:buildKavitaVolumeItems(detail.volumes or {})) do table.insert(items, it) end
-    for _, it in ipairs(self:buildKavitaChapterItems(detail.chapters or {}, "chapter")) do table.insert(items, it) end
+    local has_volumes = type(detail.volumes) == "table" and #detail.volumes > 0
+
+    -- If a series has volumes, treat them as folders and don't mix the same chapters
+    -- into the series-level listing.
+    if has_volumes then
+        for _, it in ipairs(self:buildKavitaVolumeItems(detail.volumes)) do table.insert(items, it) end
+    else
+        for _, it in ipairs(self:buildKavitaChapterItems(detail.chapters or {}, "chapter")) do table.insert(items, it) end
+    end
+
+    -- Specials are not part of numbered volumes and should stay visible at series level.
     for _, it in ipairs(self:buildKavitaChapterItems(detail.specials or {}, "special")) do table.insert(items, it) end
 
     self.catalog_title = series_name or _("Series")
@@ -656,15 +665,48 @@ function KavitaBrowser:showSeriesDetail(series_name, series_id, library_id, opts
     end
 
     local refresh_only = opts and opts.refresh_only
-    -- Push a sentinel so back returns to the stream list (skip when refreshing)
+    -- Push series breadcrumb so back from a volume returns to this series
+    -- (skip when refreshing an already-open series view).
     if not refresh_only then
         self.paths = self.paths or {}
-        table.insert(self.paths, { kavita_stream_root = self.current_stream_name, title = self.catalog_title })
+        table.insert(self.paths, {
+            kavita_series_root = true,
+            series_id = series_id,
+            library_id = library_id,
+            series_name = self.catalog_title,
+            title = self.catalog_title,
+            author = self.catalog_author,
+        })
     end
 
     -- Pass -1 to maintain current page when refreshing, nil to reset to page 1
     local itemnumber = refresh_only and -1 or nil
     self:switchItemTable(self.catalog_title, items, itemnumber, nil, self.catalog_author)
+    self:setTitleBarLeftIcon("appbar.menu")
+    self.onLeftButtonTap = function()
+        self:showTitleMenu()
+    end
+end
+
+function KavitaBrowser:showVolumeDetail(volume, series_name)
+    if not volume then return end
+
+    local chapters = type(volume.chapters) == "table" and volume.chapters or {}
+    local items = self:buildKavitaChapterItems(chapters, "chapter")
+    local volume_name = volume.name and volume.name ~= "" and volume.name
+        or (volume.number and ("Volume " .. tostring(volume.number)))
+        or _("Volume")
+
+    -- Push a volume breadcrumb so back returns to the series listing.
+    self.paths = self.paths or {}
+    table.insert(self.paths, {
+        kavita_volume_root = volume.id,
+        title = volume_name,
+    })
+
+    self.catalog_title = volume_name
+    self.catalog_author = series_name
+    self:switchItemTable(self.catalog_title, items, nil, nil, self.catalog_author)
     self:setTitleBarLeftIcon("appbar.menu")
     self.onLeftButtonTap = function()
         self:showTitleMenu()
@@ -1291,13 +1333,7 @@ function KavitaBrowser:onMenuSelect(item)
     end
 
     if item.kavita_volume and item.volume and item.volume.id then
-        local vol = item.volume
-        local ch = (type(vol.chapters) == "table") and vol.chapters[1] or nil
-        if ch and ch.id then
-            self:launchKavitaChapterViewer(ch, self.catalog_title or self.current_server_name, true)
-        else
-            UIManager:show(InfoMessage:new{ text = _("This volume has no chapters available.") })
-        end
+        self:showVolumeDetail(item.volume, self.catalog_title or self.current_server_name)
         return true
     end
 
@@ -1954,7 +1990,10 @@ function KavitaBrowser:onReturn()
     if path then
         self.catalog_title = path.title
         self.catalog_author = path.author
-        if path.kavita_stream_root then
+        if path.kavita_series_root and path.series_id then
+            -- Return to series listing from a volume view.
+            self:showSeriesDetail(path.series_name, path.series_id, path.library_id, { refresh_only = true })
+        elseif path.kavita_stream_root then
             -- return to the last stream list
             self:showKavitaStream(
                 path.kavita_stream_root,
